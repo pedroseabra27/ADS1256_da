@@ -1,12 +1,17 @@
-#include <bcm2835.h>
+#define _POSIX_C_SOURCE  200113L
 #include <cstdio>
 #include <cstring>
 #include <cmath>
 #include <cerrno>
 #include <iostream>
 #include <fstream>
+#include <iomanip>
+
 #include <unistd.h>
 #include <getopt.h>
+#include <time.h>
+
+#include <bcm2835.h>
 
 using namespace std;
 
@@ -27,8 +32,8 @@ inline void CS_0() { bcm2835_gpio_write( SPICS, LOW );  }
 
 class CS_guard {
   public:
-   CS_guard()  { bcm2835_gpio_write( SPICS, HIGH ); };
-   ~CS_guard() { bcm2835_gpio_write( SPICS, LOW );  };
+   CS_guard()  { bcm2835_gpio_write( SPICS, LOW  ); };
+   ~CS_guard() { bcm2835_gpio_write( SPICS, HIGH ); };
 };
 
 inline bool DRDY_IS_LOW() { return bcm2835_gpio_lev( DRDY ) == 0; };
@@ -303,7 +308,8 @@ void ADS1256::CfgADC( AdcGain gain, Drate drate )
   //WriteReg(REG_ADCON, (0 << 5) | (0 << 2) | (GAIN_1 << 1));  /*choose 1: gain 1 ;input 5V/
   buf[3] = s_tabDataRate[drate];  // DRATE_10SPS;
 
-  CS_0();
+  CS_guard csg;
+
   Send8Bit( CMD_WREG | 0 );  /* Write command register, send the register address */
   Send8Bit( 0x03 );      /* Register number 4,Initialize the number  -1*/
 
@@ -312,9 +318,8 @@ void ADS1256::CfgADC( AdcGain gain, Drate drate )
   Send8Bit( buf[2] );  /* Set the ADCON control register,gain */
   Send8Bit( buf[3] );  /* Set the output rate */
 
-  CS_1();  /* SPI  cs = 1 */
 
-  bsp_DelayUS(50);
+  bsp_DelayUS( 50 );
 }
 
 
@@ -358,11 +363,11 @@ uint8_t ADS1256::Recive8Bit()
  */
 void ADS1256::WriteReg(uint8_t RegID, uint8_t RegValue)
 {
-  CS_0();
+  CS_guard csg;
+
   Send8Bit( CMD_WREG | RegID );  //* Write command register
-  Send8Bit( 0x00 );               //* Write the register number
+  Send8Bit( 0x00 );              //* Write the register number
   Send8Bit( RegValue );          //* send register value
-  CS_1();
 }
 
 /*
@@ -375,16 +380,13 @@ void ADS1256::WriteReg(uint8_t RegID, uint8_t RegValue)
  */
 uint8_t ADS1256::ReadReg( uint8_t RegID )
 {
-  CS_0();
+  CS_guard csg;
 
   Send8Bit( CMD_RREG | RegID );  /* Write command register */
   Send8Bit( 0x00 );  /* Write the register number */
   DelayDATA();  /*delay time */
 
-  uint8_t read = Recive8Bit();  /* Read the register values */
-  CS_1();
-
-  return read;
+  return Recive8Bit();
 }
 
 /*
@@ -396,9 +398,8 @@ uint8_t ADS1256::ReadReg( uint8_t RegID )
  */
 void ADS1256::WriteCmd( uint8_t cmd )
 {
-  CS_0();
+  CS_guard csg;
   Send8Bit( cmd );
-  CS_1();
 }
 
 /*
@@ -532,13 +533,13 @@ void ADS1256::WaitDRDY()
  */
 int32_t ADS1256::ReadData()
 {
-  static uint8_t buf[3];
+  uint8_t buf[3];
 
-  CS_0();  /* SPI   cs = 0 */
+  CS_guard csg;
 
-  Send8Bit( CMD_RDATA );  /* read ADC command  */
+  Send8Bit( CMD_RDATA );  // read ADC command
 
-  DelayDATA();  /* delay time  */
+  DelayDATA();  // delay time
 
   /*Read the sample results 24bit*/
   buf[0] = Recive8Bit();
@@ -546,14 +547,11 @@ int32_t ADS1256::ReadData()
   buf[2] = Recive8Bit();
 
   uint32_t
-    read  =  ( (uint32_t)buf[0] << 16 ) & 0x00FF0000;
+  read  =  ( (uint32_t)buf[0] << 16 ) & 0x00FF0000;
   read |=  ( (uint32_t)buf[1] <<  8 );  /* Pay attention to It is wrong   read |= (buf[1] << 8) */
   read |=  buf[2];
 
-  CS_1();
-
-  /* Extend a signed number*/
-  if( read & 0x800000 ) {
+  if( read & 0x800000 ) { // Extend a signed number
     read |= 0xFF000000;
   }
 
@@ -657,16 +655,16 @@ uint8_t ADS1256::Scan()
  *  The return value:  NULL
  *********************************************************************************************************
  */
-void Write_DAC8552( uint8_t channel, uint16_t Data )
-{
-  // uint8_t i;
-  CS_1() ;
-  CS_0() ;
-  bcm2835_spi_transfer( channel);
-  bcm2835_spi_transfer( Data>>8 );
-  bcm2835_spi_transfer( Data&0xff );
-  CS_1() ;
-}
+// void Write_DAC8552( uint8_t channel, uint16_t Data )
+// {
+//   // uint8_t i;
+//   CS_1() ;
+//   CS_0() ;
+//   bcm2835_spi_transfer( channel);
+//   bcm2835_spi_transfer( Data>>8 );
+//   bcm2835_spi_transfer( Data&0xff );
+//   CS_1() ;
+// }
 
 /*
  *********************************************************************************************************
@@ -677,10 +675,10 @@ void Write_DAC8552( uint8_t channel, uint16_t Data )
  *  The return value:  NULL
  *********************************************************************************************************
  */
-uint16_t Voltage_Convert( float Vref, float voltage )
-{
-  return (uint16_t)( 65536 * voltage / Vref );
-}
+// uint16_t Voltage_Convert( float Vref, float voltage )
+// {
+//   return (uint16_t)( 65536 * voltage / Vref );
+// }
 
 int init_hw()
 {
@@ -688,8 +686,8 @@ int init_hw()
     return 0;
   }
   bcm2835_spi_begin();
-  bcm2835_spi_setBitOrder(BCM2835_SPI_BIT_ORDER_LSBFIRST );      // The default
-  bcm2835_spi_setDataMode(BCM2835_SPI_MODE1);                   // The default
+  bcm2835_spi_setBitOrder(BCM2835_SPI_BIT_ORDER_LSBFIRST );    // The default
+  bcm2835_spi_setDataMode(BCM2835_SPI_MODE1);                  // The default
   bcm2835_spi_setClockDivider(BCM2835_SPI_CLOCK_DIVIDER_1024); // The default
   bcm2835_gpio_fsel(SPICS, BCM2835_GPIO_FSEL_OUTP);//
   bcm2835_gpio_write(SPICS, HIGH);
@@ -710,11 +708,11 @@ void show_help()
 int main( int argc, char **argv )
 {
   int debug = 0;             // -d
-  uint32_t t_dly = 100000;   // in us, -t
+  uint32_t t_dly = 1000;     // in ms, -t
   uint32_t N = 1000;         // -n
   uint8_t  n_ch = 8;         // -c
   uint32_t gain = 1;         // -c
-  double   ref_volt = 2.48;  // -r
+  double   ref_volt = 2.484; // -r
   string ofn;                // -o
 
   int op;
@@ -735,9 +733,13 @@ int main( int argc, char **argv )
     }
   }
 
+  uint32_t t_add_sec = t_dly / 1000;
+  uint32_t t_add_ns = ( t_dly % 1000 ) * 1000000;
+
   if( debug > 0 ) {
     cerr << "N= " << N << " t_dly= " << t_dly << "n_ch= " << n_ch
-         << " gain= " << gain << " ref_volt= " << ref_volt << endl;
+         << " gain= " << gain << " ref_volt= " << ref_volt
+         << " t_add_sec= " << t_add_sec << " t_add_ns= " << t_add_ns << endl;
   }
 
   if( ! init_hw() ) {
@@ -750,12 +752,12 @@ int main( int argc, char **argv )
 
   ADS1256 adc;
   uint8_t id = adc.ReadChipID();
-  cerr<< "\r\n ID= " << id << endl;
+  cerr << "\r\n ID= " << id << endl;
   if( id != 3 )  {
     return 3;
   }
 
-  adc.CfgADC( ADS1256::GAIN_1, ADS1256::SPS_15 );
+  adc.CfgADC( ADS1256::GAIN_1, ADS1256::SPS_500 );
   adc.StartScan(0);
 
   //if( Scan() == 0)
@@ -763,37 +765,39 @@ int main( int argc, char **argv )
   //continue;
   //}
 
+  struct timespec ts0, ts1, tsc;
+
   int32_t adc_d[8];
-  int32_t volt[8];
+  double volt[8];
+
 
   for( uint32_t i_n=0; i_n < N; ++i_n ) { // TODO: break handler
+
     while( adc.Scan() == 0 ) { /* NOP */ };
+
+    clock_gettime( CLOCK_MONOTONIC, &tsc );
+    if( i_n == 0 ) {
+      ts0 = tsc; ts1 = tsc;
+    }
+    double dt = tsc.tv_sec - ts0.tv_sec + 1e-9 * (tsc.tv_nsec - ts0.tv_nsec);
+
+    cout << setfill('0') << setw(8) << i_n << ' ' << showpoint  << setw(8) << setprecision(4) << dt;
     for( int i = 0; i < n_ch; i++ ) {
       adc_d[i] = adc.GetAdc(i);
-      volt[i] = ( adc_d[i] * 100 ) / 167;
+      volt[i] = (double)adc_d[i] * ref_volt / gain / 0x400000;
+      cout << ' ' << setw(10) << setprecision(8) << volt[i];
     }
+    cout << endl;
 
-    //* debug: hex-representation
-    uint8_t buf[3];
-    for( int i = 0; i < n_ch; i++ ) {
-      buf[0] = ((uint32_t)adc_d[i] >> 16) & 0xFF;
-      buf[1] = ((uint32_t)adc_d[i] >>  8) & 0xFF;
-      buf[2] = ((uint32_t)adc_d[i] >>  0) & 0xFF;
-      printf( "%d=%02X%02X%02X, %8ld", (int)i, (int)buf[0],
-          (int)buf[1], (int)buf[2], (long)adc_d[i] );
-
-      int32_t iTemp = volt[i];  //* uV
-      if( iTemp < 0 ) {
-        iTemp = -iTemp;
-        printf( " (-%ld.%03ld %03ld V) \r\n", (long)(iTemp /1000000), (long)((iTemp%1000000)/1000), (long)(iTemp%1000) );
-      } else {
-        printf( " ( %ld.%03ld %03ld V) \r\n", (long)(iTemp /1000000), (long)((iTemp%1000000)/1000), (long)(iTemp%1000) );
-      }
-
+    ts1.tv_sec  += t_add_sec;
+    ts1.tv_nsec += t_add_ns; // compensation
+    if( ts1.tv_nsec > 1000000000L ) {
+      ts1.tv_nsec -=  1000000000L;
+      ++ts1.tv_sec;
     }
-    printf( "\33[ %dA", (int)n_ch );
-    bsp_DelayUS( t_dly );
+    clock_nanosleep( CLOCK_MONOTONIC, TIMER_ABSTIME, &ts1, 0 );
   }
+  cout << endl;
 
   bcm2835_spi_end();
   bcm2835_close();

@@ -39,7 +39,7 @@ OBJS  = $(OBJS0:.s=.o)
 OBJS1 = $(addprefix $(OBJDIR)/,$(OBJS))
 
 CFLAGS   = $(ALLFLAGS)  -std=c11
-CXXFLAGS = $(ALLFLAGS)  -std=c++14 -fgnu-keywords
+CXXFLAGS = $(ALLFLAGS)  -std=c++17 -fgnu-keywords
 
 ###################################################
 
