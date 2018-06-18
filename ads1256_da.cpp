@@ -5,6 +5,7 @@
 #include <cerrno>
 #include <iostream>
 #include <fstream>
+#include <sstream>
 #include <iomanip>
 
 #include <unistd.h>
@@ -56,6 +57,11 @@ class ADS1256 {
      GAIN_16     = 4,
      GAIN_32     = 5,
      GAIN_64     = 6,
+     GAIN_NUM    // 7
+   };
+   struct AdcGainInfo {
+     AdcGain idx;
+     uint8_t val;
    };
    enum Drate {
      SPS_30000 = 0,
@@ -75,6 +81,11 @@ class ADS1256 {
      SPS_5,
      SPS_2d5,
      SPS_MAX
+   };
+   struct AdcDrateInfo {
+     Drate    idx;
+     uint16_t val;
+     uint8_t  regval;
    };
 
    enum RegNum { //* Register definitions Table 23. Register Map --- ADS1256 datasheet Page 30
@@ -113,6 +124,8 @@ class ADS1256 {
    ADS1256();
    void StartScan( uint8_t ucScanMode );
    void Send8Bit( uint8_t data );
+   static AdcGain findGain( int g );
+   static Drate   findDrate( int sps );
    int  CfgADC( AdcGain gain, Drate drate );
    void DelayDATA() { bsp_DelayUS( 10 ); } // The minimum time delay 6.5us
    uint8_t Recive8Bit() {  return bcm2835_spi_transfer( 0xFF ); }
@@ -132,6 +145,8 @@ class ADS1256 {
   protected:
    static const uint8_t s_tabDataRate[SPS_MAX];
    static const unsigned ch_n = 8;
+   static const AdcGainInfo gainInfo[GAIN_NUM];
+   static const AdcDrateInfo drateInfo[SPS_MAX];
    AdcGain Gain   = GAIN_1;
    Drate DataRate = SPS_15;
    int32_t AdcNow[ch_n];  //* ADC  Conversion value
@@ -139,9 +154,37 @@ class ADS1256 {
    uint8_t ScanMode = 0;  //* Scanning mode, 0=Single-ended input 8 channels; 1=Differential input  4 channels
 };
 
+const ADS1256::AdcGainInfo gainInfo[ADS1256::GAIN_NUM] = {
+  { ADS1256::GAIN_1,   1 },
+  { ADS1256::GAIN_2,   2 },
+  { ADS1256::GAIN_4,   4 },
+  { ADS1256::GAIN_8,   8 },
+  { ADS1256::GAIN_16, 16 },
+  { ADS1256::GAIN_32, 32 },
+  { ADS1256::GAIN_64, 64 }
+};
+
+const ADS1256::AdcDrateInfo drateInfo[ADS1256::SPS_MAX] = {
+  {  ADS1256::SPS_30000, 30000, 0xF0 },
+  {  ADS1256::SPS_15000, 15000, 0xE0 },
+  {  ADS1256::SPS_7500,   7500, 0xD0 },
+  {  ADS1256::SPS_3750,   3750, 0xC0 },
+  {  ADS1256::SPS_2000,   2000, 0xB0 },
+  {  ADS1256::SPS_1000,   1000, 0xA1 },
+  {  ADS1256::SPS_500,     500, 0x92 },
+  {  ADS1256::SPS_100,     100, 0x82 },
+  {  ADS1256::SPS_60,       60, 0x72 },
+  {  ADS1256::SPS_50,       60, 0x63 },
+  {  ADS1256::SPS_30,       30, 0x53 },
+  {  ADS1256::SPS_25,       25, 0x43 },
+  {  ADS1256::SPS_15,       15, 0x33 },
+  {  ADS1256::SPS_10,       10, 0x23 },
+  {  ADS1256::SPS_5,         5, 0x13 },
+  {  ADS1256::SPS_2d5,       2, 0x03 } // really 2.5
+};
 
 const uint8_t ADS1256::s_tabDataRate[SPS_MAX] =
-{    /*reset the default values  */
+{    /*reset the default values                                                   23?     */
   0xF0, 0xE0, 0xD0, 0xC0, 0xB0, 0xA1, 0x92, 0x82, 0x72, 0x63, 0x53, 0x43, 0x33, 0x20, 0x13, 0x03
 };
 
@@ -194,7 +237,25 @@ void bsp_InitADS1256()
 }
 
 
+ADS1256::AdcGain ADS1256::findGain( int g )
+{
+  for( auto v : gainInfo ) {
+    if( v.val == g ) {
+      return v.idx;
+    }
+  }
+  return GAIN_NUM;
+}
 
+ADS1256::Drate  ADS1256::findDrate( int sps )
+{
+  for( auto v : drateInfo ) {
+    if( v.val == sps ) {
+      return v.idx;
+    }
+  }
+  return SPS_MAX;
+}
 
 /*
  *********************************************************************************************************
@@ -289,9 +350,9 @@ int  ADS1256::CfgADC( AdcGain gain, Drate drate )
 
       Bits 4-3 SDCS1, SCDS0: Sensor Detect Current Sources
       00 = Sensor Detect OFF (default)
-      01 = Sensor Detect Current = 0.5 xA TODO: fix from manual
-      10 = Sensor Detect Current = 2 xA
-      11 = Sensor Detect Current = 10 xA
+      01 = Sensor Detect Current = 0.5 uA
+      10 = Sensor Detect Current = 2 uA
+      11 = Sensor Detect Current = 10 uA
       The Sensor Detect Current Sources can be activated to verify  the integrity of an external sensor supplying a signal to the
       ADS1255/6. A shorted sensor produces a very small signal while an open-circuit sensor produces a very large signal.
 
@@ -320,6 +381,7 @@ int  ADS1256::CfgADC( AdcGain gain, Drate drate )
   Send8Bit( buf[3] );  /* Set the output rate */
 
   bsp_DelayUS( 50 );
+  // TODO: calibrate
   return 1;
 }
 
@@ -684,7 +746,7 @@ int init_hw()
 void show_help()
 {
   cout << "ads1256_da usage: \n";
-  cout << "ads1256_da [-h] [-d] [-t t_dly,us ] [ -c channels ] [ -g gain ] [ -n iterations ] [ -r ref_volt ] [ -o file ]\n";
+  cout << "ads1256_da [-h] [-d] [-t t_dly,us ] [ -c channels ] [ -g gain ] [ -D drate ] [ -n iterations ] [ -r ref_volt ] [ -o file ]\n";
 }
 
 
@@ -696,12 +758,14 @@ int main( int argc, char **argv )
   uint32_t t_dly = 1000;     // in ms, -t
   uint32_t N = 1000;         // -n
   uint8_t  n_ch = 8;         // -c
-  uint32_t gain = 1;         // -c
+  int      gain = 1;         // -c
+  int      drate = -1;       // -D -1 = auto
   double   ref_volt = 2.484; // -r
   string ofn;                // -o
+  bool do_fout = false;
 
-  int op;
-  while( ( op = getopt( argc, argv, "hdt:n:g:c:r:o:" ) ) != -1 ) {
+  int op; // TODO: -q 0 1 2   -C 1,5,4-2,3 -T - ideal time output
+  while( ( op = getopt( argc, argv, "hdt:n:g:c:D:r:o:" ) ) != -1 ) {
     switch( op ) {
       case 'h' : show_help(); return 0;
       case 'd' : ++debug; break;
@@ -709,6 +773,7 @@ int main( int argc, char **argv )
       case 'n' : N     = strtol( optarg, 0, 0 ); break;
       case 'c' : n_ch  = (uint8_t) strtol( optarg, 0, 0 ); break;
       case 'g' : gain  = strtol( optarg, 0, 0 ); break;
+      case 'D' : drate  = strtol( optarg, 0, 0 ); break;
       case 'r' : ref_volt  = strtod( optarg, 0 ); break;
       case 'o' : ofn  = optarg; break;
       default:
@@ -718,13 +783,40 @@ int main( int argc, char **argv )
     }
   }
 
+  auto gain_idx = ADS1256::findGain( gain );
+  if( gain_idx >= ADS1256::GAIN_NUM ) {
+    cerr << "Bad gain value " << gain << ", must be 1,2...64" << endl;
+    return 1;
+  }
+
+  // TODO: auto drate
+  if( drate < 1 ) {
+    drate = 500;
+  }
+
+  auto drate_idx = ADS1256::findDrate( drate );
+  if( drate_idx >= ADS1256::SPS_MAX ) {
+    cerr << "Bad drate value " << drate << ", must be 2,5,10,20,25,50,60,100 ... 30000" << endl;
+    return 1;
+  }
+
+  // TODO: check drate with t_dly
+
   uint32_t t_add_sec = t_dly / 1000;
   uint32_t t_add_ns = ( t_dly % 1000 ) * 1000000;
 
   if( debug > 0 ) {
     cerr << "N= " << N << " t_dly= " << t_dly << "n_ch= " << n_ch
-         << " gain= " << gain << " ref_volt= " << ref_volt
+         << " gain= " << gain << " gain_idx= " << (int)(gain_idx) <<" ref_volt= " << ref_volt
          << " t_add_sec= " << t_add_sec << " t_add_ns= " << t_add_ns << endl;
+  }
+
+  ofstream os;
+  if( ! ofn.empty() ) {
+    os.open( ofn );
+    if( os ) {
+      do_fout = true;
+    }
   }
 
   if( ! init_hw() ) {
@@ -732,17 +824,15 @@ int main( int argc, char **argv )
     return 2;
   }
 
-  //WriteReg(REG_MUX,0x01);
-  //WriteReg(REG_ADCON,0x20);
-
   ADS1256 adc;
   uint8_t id = adc.ReadChipID();
   cerr << "\r\n ID= " << (int)id << " (must be 3)"<< endl;
   if( id != 3 )  {
+    cerr << "Bad chip ID " << id << endl;
     return 3;
   }
 
-  if( ! adc.CfgADC( ADS1256::GAIN_1, ADS1256::SPS_500 ) ) {
+  if( ! adc.CfgADC( gain_idx, drate_idx ) ) {
     cerr << "Fail to config ADC" << endl;
     return 5;
   }
@@ -755,9 +845,14 @@ int main( int argc, char **argv )
   //}
 
   struct timespec ts0, ts1, tsc;
+  clock_gettime( CLOCK_MONOTONIC, &ts0 ); ts1 = ts1; // just to make GCC happy
 
   int32_t adc_d[8];
   double volt[8];
+
+  string obuf;
+  obuf.reserve( 256 );
+  ostringstream s_os( obuf ); // .str( )
 
 
   for( uint32_t i_n=0; i_n < N; ++i_n ) { // TODO: break handler
