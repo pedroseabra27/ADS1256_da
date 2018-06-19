@@ -11,6 +11,7 @@
 #include <unistd.h>
 #include <getopt.h>
 #include <time.h>
+#include <signal.h>
 
 #include <bcm2835.h>
 
@@ -27,6 +28,15 @@ using namespace std;
 #define  DRDY   RPI_GPIO_P1_11  // P0
 #define  RST    RPI_GPIO_P1_12  // P1
 #define  SPICS  RPI_GPIO_P1_15  // P3
+
+volatile int break_loop = 0;
+
+void sigint_handler( int signum );
+
+void sigint_handler( int signum )
+{
+  ++break_loop;
+}
 
 inline void CS_1() { bcm2835_gpio_write( SPICS, HIGH ); }
 inline void CS_0() { bcm2835_gpio_write( SPICS, LOW );  }
@@ -154,7 +164,7 @@ class ADS1256 {
    uint8_t ScanMode = 0;  //* Scanning mode, 0=Single-ended input 8 channels; 1=Differential input  4 channels
 };
 
-const ADS1256::AdcGainInfo gainInfo[ADS1256::GAIN_NUM] = {
+const ADS1256::AdcGainInfo ADS1256::gainInfo[ADS1256::GAIN_NUM] = {
   { ADS1256::GAIN_1,   1 },
   { ADS1256::GAIN_2,   2 },
   { ADS1256::GAIN_4,   4 },
@@ -164,7 +174,7 @@ const ADS1256::AdcGainInfo gainInfo[ADS1256::GAIN_NUM] = {
   { ADS1256::GAIN_64, 64 }
 };
 
-const ADS1256::AdcDrateInfo drateInfo[ADS1256::SPS_MAX] = {
+const ADS1256::AdcDrateInfo ADS1256::drateInfo[ADS1256::SPS_MAX] = {
   {  ADS1256::SPS_30000, 30000, 0xF0 },
   {  ADS1256::SPS_15000, 15000, 0xE0 },
   {  ADS1256::SPS_7500,   7500, 0xD0 },
@@ -174,7 +184,7 @@ const ADS1256::AdcDrateInfo drateInfo[ADS1256::SPS_MAX] = {
   {  ADS1256::SPS_500,     500, 0x92 },
   {  ADS1256::SPS_100,     100, 0x82 },
   {  ADS1256::SPS_60,       60, 0x72 },
-  {  ADS1256::SPS_50,       60, 0x63 },
+  {  ADS1256::SPS_50,       50, 0x63 },
   {  ADS1256::SPS_30,       30, 0x53 },
   {  ADS1256::SPS_25,       25, 0x43 },
   {  ADS1256::SPS_15,       15, 0x33 },
@@ -239,7 +249,7 @@ void bsp_InitADS1256()
 
 ADS1256::AdcGain ADS1256::findGain( int g )
 {
-  for( auto v : gainInfo ) {
+  for( auto v : ADS1256::gainInfo ) {
     if( v.val == g ) {
       return v.idx;
     }
@@ -853,9 +863,14 @@ int main( int argc, char **argv )
   string obuf;
   obuf.reserve( 256 );
   ostringstream s_os( obuf ); // .str( )
+  if( do_fout ) {
+    os << "# start" << endl;
+  }
+
+  signal( SIGINT, sigint_handler );
 
 
-  for( uint32_t i_n=0; i_n < N; ++i_n ) { // TODO: break handler
+  for( uint32_t i_n=0; i_n < N && ! break_loop; ++i_n ) {
 
     unsigned n_wait = 0;
     while( adc.Scan() == 0 ) { ++n_wait; /* NOP */ };
@@ -883,6 +898,9 @@ int main( int argc, char **argv )
     clock_nanosleep( CLOCK_MONOTONIC, TIMER_ABSTIME, &ts1, 0 );
   }
   cout << endl;
+  if( break_loop ) {
+    cerr << "Loop was terminated" << endl;
+  }
 
   bcm2835_spi_end();
   bcm2835_close();
