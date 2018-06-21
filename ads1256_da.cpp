@@ -59,6 +59,13 @@ inline void  bsp_DelayUS( uint64_t micros )
 
 class ADS1256 {
   public:
+   enum AdcTimes {
+     time_send = 2,
+     time_postcfg = 50,
+     time_delayData  = 10,
+     time_postChan = 5,
+     time_wakeup = 25
+   };
    enum AdcGain {
      GAIN_1      = 0,
      GAIN_2      = 1,
@@ -133,12 +140,15 @@ class ADS1256 {
 
    ADS1256();
    void StartScan( uint8_t ucScanMode );
-   void Send8Bit( uint8_t data );
+   void sendByte( uint8_t data );
+   void sendBytes( uint8_t d0, uint8_t d1 );
+   void sendBytes( uint8_t d0, uint8_t d1, uint8_t d2 );
+   void sendBytes( const uint8_t *data, unsigned n );
    static AdcGain findGain( int g );
    static Drate   findDrate( int sps );
    int  CfgADC( AdcGain gain, Drate drate );
-   void DelayDATA() { bsp_DelayUS( 10 ); } // The minimum time delay 6.5us
-   uint8_t Recive8Bit() {  return bcm2835_spi_transfer( 0xFF ); }
+   void DelayDATA() { bsp_DelayUS( time_delayData ); } // The minimum time delay 6.5us
+   uint8_t recvByte() {  return bcm2835_spi_transfer( 0xFF ); }
    void WriteReg( uint8_t RegID, uint8_t RegValue );
    uint8_t ReadReg( uint8_t RegID );
    void WriteCmd( uint8_t cmd );
@@ -153,11 +163,11 @@ class ADS1256 {
    uint8_t Scan();
    void clear();
   protected:
-   static const uint8_t s_tabDataRate[SPS_MAX];
    static const unsigned ch_n = 8;
    static const AdcGainInfo gainInfo[GAIN_NUM];
    static const AdcDrateInfo drateInfo[SPS_MAX];
    AdcGain Gain   = GAIN_1;
+   int gainval = 1;
    Drate DataRate = SPS_15;
    int32_t AdcNow[ch_n];  //* ADC  Conversion value
    uint8_t Channel =  0;  //* The current channel
@@ -165,58 +175,33 @@ class ADS1256 {
 };
 
 const ADS1256::AdcGainInfo ADS1256::gainInfo[ADS1256::GAIN_NUM] = {
-  { ADS1256::GAIN_1,   1 },
-  { ADS1256::GAIN_2,   2 },
-  { ADS1256::GAIN_4,   4 },
-  { ADS1256::GAIN_8,   8 },
-  { ADS1256::GAIN_16, 16 },
-  { ADS1256::GAIN_32, 32 },
-  { ADS1256::GAIN_64, 64 }
+  { GAIN_1,   1 },
+  { GAIN_2,   2 },
+  { GAIN_4,   4 },
+  { GAIN_8,   8 },
+  { GAIN_16, 16 },
+  { GAIN_32, 32 },
+  { GAIN_64, 64 }
 };
 
 const ADS1256::AdcDrateInfo ADS1256::drateInfo[ADS1256::SPS_MAX] = {
-  {  ADS1256::SPS_30000, 30000, 0xF0 },
-  {  ADS1256::SPS_15000, 15000, 0xE0 },
-  {  ADS1256::SPS_7500,   7500, 0xD0 },
-  {  ADS1256::SPS_3750,   3750, 0xC0 },
-  {  ADS1256::SPS_2000,   2000, 0xB0 },
-  {  ADS1256::SPS_1000,   1000, 0xA1 },
-  {  ADS1256::SPS_500,     500, 0x92 },
-  {  ADS1256::SPS_100,     100, 0x82 },
-  {  ADS1256::SPS_60,       60, 0x72 },
-  {  ADS1256::SPS_50,       50, 0x63 },
-  {  ADS1256::SPS_30,       30, 0x53 },
-  {  ADS1256::SPS_25,       25, 0x43 },
-  {  ADS1256::SPS_15,       15, 0x33 },
-  {  ADS1256::SPS_10,       10, 0x23 },
-  {  ADS1256::SPS_5,         5, 0x13 },
-  {  ADS1256::SPS_2d5,       2, 0x03 } // really 2.5
+  { SPS_30000, 30000, 0xF0 },
+  { SPS_15000, 15000, 0xE0 },
+  { SPS_7500,   7500, 0xD0 },
+  { SPS_3750,   3750, 0xC0 },
+  { SPS_2000,   2000, 0xB0 },
+  { SPS_1000,   1000, 0xA1 },
+  { SPS_500,     500, 0x92 },
+  { SPS_100,     100, 0x82 },
+  { SPS_60,       60, 0x72 },
+  { SPS_50,       50, 0x63 },
+  { SPS_30,       30, 0x53 },
+  { SPS_25,       25, 0x43 },
+  { SPS_15,       15, 0x33 },
+  { SPS_10,       10, 0x23 },
+  { SPS_5,         5, 0x13 },
+  { SPS_2d5,       2, 0x03 } // really 2.5
 };
-
-const uint8_t ADS1256::s_tabDataRate[SPS_MAX] =
-{    /*reset the default values                                                   23?     */
-  0xF0, 0xE0, 0xD0, 0xC0, 0xB0, 0xA1, 0x92, 0x82, 0x72, 0x63, 0x53, 0x43, 0x33, 0x20, 0x13, 0x03
-};
-
-/* Sampling speed choice*/
-/*
-   11110000 = 30,000SPS (default)
-   11100000 = 15,000SPS
-   11010000 = 7,500SPS
-   11000000 = 3,750SPS
-   10110000 = 2,000SPS
-   10100001 = 1,000SPS
-   10010010 = 500SPS
-   10000010 = 100SPS
-   01110010 = 60SPS
-   01100011 = 50SPS
-   01010011 = 30SPS
-   01000011 = 25SPS
-   00110011 = 15SPS
-   00100011 = 10SPS
-   00010011 = 5SPS
-   00000011 = 2.5SPS
-   */
 
 
 ADS1256::ADS1256()
@@ -284,16 +269,39 @@ void ADS1256::StartScan( uint8_t ucScanMode )
 
 /*
  *********************************************************************************************************
- *  name: ADS1256::Send8Bit
+ *  name: ADS1256::sendByte
  *  function: SPI bus to send 8 bit data
  *  parameter: data:  data
  *  The return value: NULL
  *********************************************************************************************************
  */
-void ADS1256::Send8Bit( uint8_t data )
+void ADS1256::sendByte( uint8_t d0 )
 {
-  bsp_DelayUS( 2 );
-  bcm2835_spi_transfer( data );
+  bsp_DelayUS( time_send );
+  bcm2835_spi_transfer( d0 );
+}
+
+void ADS1256::sendBytes( uint8_t d0, uint8_t d1 )
+{
+  bsp_DelayUS( time_send );
+  bcm2835_spi_transfer( d0 );
+  bcm2835_spi_transfer( d1 );
+}
+
+void ADS1256::sendBytes( uint8_t d0, uint8_t d1, uint8_t d2 )
+{
+  bsp_DelayUS( time_send );
+  bcm2835_spi_transfer( d0 );
+  bcm2835_spi_transfer( d1 );
+  bcm2835_spi_transfer( d2 );
+}
+
+void ADS1256::sendBytes( const uint8_t *data, unsigned n )
+{
+  bsp_DelayUS( time_send );
+  for( unsigned i=0; i<n; ++i ) {
+    bcm2835_spi_transfer( data[i] );
+  }
 }
 
 /*
@@ -307,7 +315,12 @@ void ADS1256::Send8Bit( uint8_t data )
  */
 int  ADS1256::CfgADC( AdcGain gain, Drate drate )
 {
+  if( gain >= GAIN_NUM || drate >= SPS_MAX ) {
+    return 0;
+  }
+
   Gain = gain;
+  gainval = gainInfo[gain].val;
   DataRate = drate;
 
   if( ! WaitDRDY() ) {
@@ -376,22 +389,17 @@ int  ADS1256::CfgADC( AdcGain gain, Drate drate )
       110 = 64
       111 = 64
       */
-  buf[2] = (0 << 5) | (0 << 3) | ( gain << 0 );
+  buf[2] = (0 << 5) | (0 << 3) |  gain;
   //WriteReg(REG_ADCON, (0 << 5) | (0 << 2) | (GAIN_1 << 1));  /*choose 1: gain 1 ;input 5V/
-  buf[3] = s_tabDataRate[drate];  // DRATE_10SPS;
+  buf[3] = drateInfo[drate].regval;
 
   CS_guard csg;
 
-  Send8Bit( CMD_WREG | 0 );  /* Write command register, send the register address */
-  Send8Bit( 0x03 );      /* Register number 4,Initialize the number  -1*/
+  sendBytes( CMD_WREG | 0, 0x03 );  /* Write command register, send the register address, write */
 
-  Send8Bit( buf[0] );  /* Set the status register */
-  Send8Bit( buf[1] );  /* Set the input channel parameters */
-  Send8Bit( buf[2] );  /* Set the ADCON control register,gain */
-  Send8Bit( buf[3] );  /* Set the output rate */
+  sendBytes( buf, 4 );  /* Set the status, input channel, ADCON, outrate regs */
 
-  bsp_DelayUS( 50 );
-  // TODO: calibrate
+  bsp_DelayUS( time_postcfg );
   return 1;
 }
 
@@ -405,13 +413,11 @@ int  ADS1256::CfgADC( AdcGain gain, Drate drate )
  *  The return value: NULL
  *********************************************************************************************************
  */
-void ADS1256::WriteReg(uint8_t RegID, uint8_t RegValue)
+void ADS1256::WriteReg( uint8_t RegID, uint8_t RegValue )
 {
   CS_guard csg;
 
-  Send8Bit( CMD_WREG | RegID );  //* Write command register
-  Send8Bit( 0x00 );              //* Write the register number
-  Send8Bit( RegValue );          //* send register value
+  sendBytes( CMD_WREG | RegID, 0, RegValue );  //* Write command register, num, value
 }
 
 /*
@@ -426,11 +432,11 @@ uint8_t ADS1256::ReadReg( uint8_t RegID )
 {
   CS_guard csg;
 
-  Send8Bit( CMD_RREG | RegID );  // Write command register
-  Send8Bit( 0x00 );              // Write the register number
+  sendBytes( CMD_RREG | RegID, 0 );  // Write command register
+
   DelayDATA();
 
-  return Recive8Bit();
+  return recvByte();
 }
 
 /*
@@ -443,7 +449,7 @@ uint8_t ADS1256::ReadReg( uint8_t RegID )
 void ADS1256::WriteCmd( uint8_t cmd )
 {
   CS_guard csg;
-  Send8Bit( cmd );
+  sendByte( cmd );
 }
 
 /*
@@ -584,14 +590,14 @@ int32_t ADS1256::ReadData()
 
   CS_guard csg;
 
-  Send8Bit( CMD_RDATA );  // read ADC command
+  sendByte( CMD_RDATA );  // read ADC command
 
   DelayDATA();  // delay time
 
   /*Read the sample results 24bit*/
-  buf[0] = Recive8Bit();
-  buf[1] = Recive8Bit();
-  buf[2] = Recive8Bit();
+  buf[0] = recvByte();
+  buf[1] = recvByte();
+  buf[2] = recvByte();
 
   uint32_t
   read  =  ( (uint32_t)buf[0] << 16 ) & 0x00FF0000;
@@ -635,13 +641,13 @@ void ADS1256::ISR()
 {
   if( ScanMode == 0 ) {    //  0=Single-ended input, 8 channel;  1= Differential input  4 channels
     SetChannal( Channel ); //  Switch channel mode
-    bsp_DelayUS( 5 );
+    bsp_DelayUS( time_postChan );
 
     WriteCmd( CMD_SYNC );
-    bsp_DelayUS( 5 );
+    bsp_DelayUS( time_postChan );
 
     WriteCmd(CMD_WAKEUP);
-    bsp_DelayUS( 25 );
+    bsp_DelayUS( time_wakeup );
 
     if( Channel == 0 ) { // What??
       AdcNow[7] = ReadData();
@@ -655,13 +661,13 @@ void ADS1256::ISR()
   }  else  { //* DiffChannal
 
     SetDiffChannal( Channel );  //* change DiffChannal
-    bsp_DelayUS( 5 );
+    bsp_DelayUS( time_postChan );
 
     WriteCmd( CMD_SYNC );
-    bsp_DelayUS( 5 );
+    bsp_DelayUS( time_postChan );
 
     WriteCmd( CMD_WAKEUP );
-    bsp_DelayUS( 25 );
+    bsp_DelayUS( time_wakeup );
 
     if( Channel == 0 ) {
       AdcNow[3] = ReadData();
