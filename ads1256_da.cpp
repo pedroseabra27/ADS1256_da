@@ -188,6 +188,7 @@ class ADS1256 {
    vector<double> volts;
    vector<uint8_t> muxs;
    Drate DataRate = SPS_15;
+   bool need_start = true;
    int32_t AdcNow[ch_max];  //* ADC  Conversion value TODO: vector, size depend on ch_n
    uint8_t Channel =  0;  //* The current channel
    uint8_t ScanMode = 0;  //* Scanning mode, 0=Single-ended input 8 channels; 1=Differential input  4 channels
@@ -363,16 +364,16 @@ int ADS1256::calc_muxs_spec( const string &spec )
 
 int ADS1256::writeMux( uint8_t m )
 {
+  WaitDRDY();
   if( m == curr_reg_mux ) {
     return 1;
   }
-  WaitDRDY();
   WriteReg( REG_MUX, m );
   bsp_DelayUS( time_postChan );
   WriteCmd( CMD_SYNC );
   bsp_DelayUS( time_postChan );
 
-  WriteCmd(CMD_WAKEUP);
+  WriteCmd( CMD_WAKEUP );
   bsp_DelayUS( time_wakeup );
   curr_reg_mux = m;
   return 2;
@@ -381,13 +382,27 @@ int ADS1256::writeMux( uint8_t m )
 int ADS1256::measureLine()
 {
   int n = 0;
-  clear();
-  writeMux( muxs[0] );
   int mc = muxs.size();
+  clear();
+  if( mc < 1 ) {
+    return 0;
+  }
+
+  if( need_start ) {
+    WriteCmd( CMD_SYNC );
+    bsp_DelayUS( time_postChan );
+
+    WriteCmd( CMD_WAKEUP );
+    bsp_DelayUS( time_wakeup );
+    need_start = false;
+  }
+
+  writeMux( muxs[0] );
 
   for( int i=0; i<mc; ++i ) {
     int32_t vi = ReadData();
     volts[i] = (double) vi * ref_volt / gainval / 0x400000;
+    ++n;
     int j = i+1;
     if( j >= mc ) { j  = 0; }
     writeMux( muxs[j] );
@@ -737,6 +752,7 @@ int32_t ADS1256::ReadData()
   sendByte( CMD_RDATA );  // read ADC command
 
   DelayDATA();  // delay time
+  WaitDRDY();
 
   /*Read the sample results 24bit*/
   buf[0] = recvByte();
@@ -893,10 +909,12 @@ int init_hw()
   if( !bcm2835_init() ) {
     return 0;
   }
-  bcm2835_spi_begin();
-  bcm2835_spi_setBitOrder(BCM2835_SPI_BIT_ORDER_LSBFIRST );    // The default
-  bcm2835_spi_setDataMode(BCM2835_SPI_MODE1);                  // The default
-  bcm2835_spi_setClockDivider(BCM2835_SPI_CLOCK_DIVIDER_1024); // The default
+  if( ! bcm2835_spi_begin() )  {
+    return 0;
+  }
+  bcm2835_spi_setBitOrder( BCM2835_SPI_BIT_ORDER_LSBFIRST );    // The default LSBFIRST
+  bcm2835_spi_setDataMode( BCM2835_SPI_MODE1 );                  // The default = MODE1
+  bcm2835_spi_setClockDivider( BCM2835_SPI_CLOCK_DIVIDER_1024 ); // The default = 1024
   bcm2835_gpio_fsel(SPICS, BCM2835_GPIO_FSEL_OUTP);//
   bcm2835_gpio_write(SPICS, HIGH);
   bcm2835_gpio_fsel(DRDY, BCM2835_GPIO_FSEL_INPT);
@@ -1051,9 +1069,6 @@ int main( int argc, char **argv )
 
   for( uint32_t i_n=0; i_n < N && ! break_loop; ++i_n ) {
 
-    unsigned n_wait = 0;
-    while( adc.Scan() == 0 ) { ++n_wait; /* NOP */ };
-
     clock_gettime( CLOCK_MONOTONIC, &tsc );
     if( i_n == 0 ) {
       ts0 = tsc; ts1 = tsc;
@@ -1061,16 +1076,13 @@ int main( int argc, char **argv )
     double dt = tsc.tv_sec - ts0.tv_sec + 1e-9 * (tsc.tv_nsec - ts0.tv_nsec);
 
     cout << setfill('0') << setw(8) << i_n << ' ' << showpoint  << setw(8) << setprecision(4) << dt;
+
     adc.measureLine();
+
     for( auto v : adc.getVolts() ) {
        cout << ' ' << setw(10) << setprecision(8) << v;
     }
-    // for( int i = 0; i < n_ch; i++ ) {
-    //   adc_d[i] = adc.GetAdc(i);
-    //   volt[i] = (double)adc_d[i] * ref_volt / gain / 0x400000;
-    //   cout << ' ' << setw(10) << setprecision(8) << volt[i];
-    // }
-    cout << ' ' << n_wait << endl;
+    cout << ' ' << endl;
 
     ts1.tv_sec  += t_add_sec;
     ts1.tv_nsec += t_add_ns; // compensation
