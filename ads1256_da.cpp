@@ -7,6 +7,8 @@
 #include <fstream>
 #include <sstream>
 #include <iomanip>
+#include <vector>
+#include <regex>
 
 #include <unistd.h>
 #include <getopt.h>
@@ -150,6 +152,9 @@ class ADS1256 {
    void sendBytes( const uint8_t *data, unsigned n );
    static AdcGain findGain( int g );
    static Drate   findDrate( int sps );
+   static uint8_t calc_reg_mux( uint8_t c1, uint8_t c2 );
+   int calc_muxs_n( int n );
+   int calc_muxs_spec( const string &spec );
    int  CfgADC( AdcGain gain, Drate drate );
    void DelayDATA() { bsp_DelayUS( time_delayData ); } // The minimum time delay 6.5us
    uint8_t recvByte() {  return bcm2835_spi_transfer( 0xFF ); }
@@ -161,21 +166,32 @@ class ADS1256 {
    void SetDiffChannal( uint8_t ch );
    int  WaitDRDY();
    int32_t ReadData();
+   int measureLine();
+   void setRefVolt( double rv ) { ref_volt = rv; }
+   double getRefVolt() const { return ref_volt; }
 
    int32_t GetAdc( uint8_t ch );
+   const vector<double>& getVolts() const { return volts; }
    void ISR();
    uint8_t Scan();
    void clear();
+   int get_ch_n() const { return muxs.size(); };
+   const vector<uint8_t>& getMuxs() const { return muxs; }
   protected:
-   static const unsigned ch_n = 8;
+   static const unsigned ch_max = 8;
    static const AdcGainInfo gainInfo[GAIN_NUM];
    static const AdcDrateInfo drateInfo[SPS_MAX];
+   double ref_volt = 2.48;
    AdcGain Gain   = GAIN_1;
    int gainval = 1;
+   uint8_t curr_reg_mux = 0xFF;
+   vector<double> volts;
+   vector<uint8_t> muxs;
    Drate DataRate = SPS_15;
-   int32_t AdcNow[ch_n];  //* ADC  Conversion value
+   int32_t AdcNow[ch_max];  //* ADC  Conversion value TODO: vector, size depend on ch_n
    uint8_t Channel =  0;  //* The current channel
    uint8_t ScanMode = 0;  //* Scanning mode, 0=Single-ended input 8 channels; 1=Differential input  4 channels
+   int writeMux( uint8_t m );
 };
 
 const ADS1256::AdcGainInfo ADS1256::gainInfo[ADS1256::GAIN_NUM] = {
@@ -210,29 +226,8 @@ const ADS1256::AdcDrateInfo ADS1256::drateInfo[ADS1256::SPS_MAX] = {
 
 ADS1256::ADS1256()
 {
-}
-
-
-
-/*
- *********************************************************************************************************
- *  name: bsp_InitADS1256
- *  function: Configuration of the STM32 GPIO and SPI interfaces The connection ADS1256
- *  parameter: NULL
- *  The return value: NULL
- *********************************************************************************************************
- */
-
-
-void bsp_InitADS1256()
-{
-#ifdef SOFT_SPI
-  CS_1();
-  SCK_0();
-  DI_0();
-#endif
-
-  //ADS1256_CfgADC(ADS1256_GAIN_1, ADS1256_1000SPS);  /*  1KHz */
+  volts.reserve( 32 );
+  volts.assign( 32, 0.0 );
 }
 
 
@@ -254,6 +249,151 @@ ADS1256::Drate  ADS1256::findDrate( int sps )
     }
   }
   return SPS_MAX;
+}
+
+
+/*
+ *  function: calculate REG_MUX value for channel or pair of channels
+ *  parameters: c1 - first channel [0:7], c2 - secons channel [0:7], if > 7 - single-ended
+ *  The return value: register valus or 0xFF if bad params ( both > 7 )
+ *********************************************************************************************************
+ */
+uint8_t ADS1256::calc_reg_mux( uint8_t c1, uint8_t c2 )
+{
+  uint8_t v = 0;
+  if( c1 >= ch_max ) {
+     v |= 0xF0; // AINCOM
+  } else {
+     v |= ( c1 << 4 ) & 0x70;
+  }
+
+  if( c2 >= ch_max ) {
+     v |= 0x0F; // AINCOM
+  } else {
+     v |= c2 & 0x07;
+  }
+
+  return v;
+}
+
+int ADS1256::calc_muxs_n( int n )
+{
+  if( n > (int)ch_max ) {
+    n = ch_max;
+  }
+  muxs.clear();
+  for( int i=0; i<n; ++i ) {
+    uint8_t m = calc_reg_mux( (uint8_t)(i), 0xFF );
+    if( m != 0xFF ) {
+      muxs.emplace_back( m );
+    }
+  }
+  clear();
+  curr_reg_mux = 0xFF;
+  return muxs.size();
+}
+
+int ADS1256::calc_muxs_spec( const string &spec )
+{
+  muxs.clear();
+  if( spec.empty() ) {
+    return 0;
+  }
+  regex decuns( "^\\d+$" );
+  regex decdiff( "^(\\d+)-(\\d+)$" );
+  regex decrange( "^(\\d+):(\\d+)$" );
+
+  bool need_next = true;
+  string badstr;
+  for( auto c = spec.cbegin(); need_next;  ) {
+    auto f = find( c, spec.cend(), ',' );
+    if( f == spec.cend() ) {
+      need_next = false;
+    }
+    string t1 ( c, f );
+    smatch sm;
+    // cerr << t1 << endl;
+    if( regex_search( t1, decuns ) ) {
+      int ch1 = stoi( t1, nullptr, 0 );
+      // cout << " ch1= " << ch1;
+      uint8_t m = calc_reg_mux( (uint8_t)(ch1), 0xFF );
+      if( m != 0xFF ) {
+        muxs.emplace_back( m );
+      } else {
+        badstr = t1; break;
+      };
+    } else if( regex_search( t1, sm, decdiff ) ) {
+      int ch1 = stoi( sm[1], nullptr, 0 );
+      int ch2 = stoi( sm[2], nullptr, 0 );
+      // cout << " ch1= " << ch1 << " ch2= " << ch2;
+      uint8_t m = calc_reg_mux( (uint8_t)(ch1), (uint8_t)(ch2) );
+      if( m != 0xFF ) {
+        muxs.emplace_back( m );
+      } else {
+        badstr = t1; break;
+      };
+    } else if( regex_search( t1, sm, decrange ) ) {
+      int ch1 = stoi( sm[1], nullptr, 0 );
+      int ch2 = stoi( sm[2], nullptr, 0 );
+      // cout << " ch1= " << ch1 << " ch2= " << ch2;
+      for( int c = ch1; c <= ch2 && badstr.empty(); ++c ) {
+        uint8_t m = calc_reg_mux( (uint8_t)(c), 0xFF );
+        if( m != 0xFF ) {
+          muxs.emplace_back( m );
+        } else {
+          badstr = t1; break;
+        };
+      }
+    } else {
+      badstr = t1; break;
+    }
+    ++f; c = f;
+    // cerr << endl;
+  }
+
+  if( ! badstr.empty() ) {
+      cerr << "Error: bad channel spec string \"" << badstr << "\"" << endl;
+      muxs.clear();
+      return 0;
+  }
+
+  curr_reg_mux = 0xFF;
+  return muxs.size();
+}
+
+int ADS1256::writeMux( uint8_t m )
+{
+  if( m == curr_reg_mux ) {
+    return 1;
+  }
+  WaitDRDY();
+  WriteReg( REG_MUX, m );
+  bsp_DelayUS( time_postChan );
+  WriteCmd( CMD_SYNC );
+  bsp_DelayUS( time_postChan );
+
+  WriteCmd(CMD_WAKEUP);
+  bsp_DelayUS( time_wakeup );
+  curr_reg_mux = m;
+  return 2;
+}
+
+int ADS1256::measureLine()
+{
+  int n = 0;
+  clear();
+  writeMux( muxs[0] );
+  int mc = muxs.size();
+
+  for( int i=0; i<mc; ++i ) {
+    int32_t vi = ReadData();
+    volts[i] = (double) vi * ref_volt / gainval / 0x400000;
+    int j = i+1;
+    if( j >= mc ) { j  = 0; }
+    writeMux( muxs[j] );
+  }
+
+  return n;
 }
 
 /*
@@ -466,11 +606,11 @@ void ADS1256::WriteCmd( uint8_t cmd )
  */
 uint8_t ADS1256::ReadChipID()
 {
-  if( !WaitDRDY() ) {
+  if( ! WaitDRDY() ) {
     return 0;
   }
   int8_t id = ReadReg( REG_STATUS );
-  return (id >> 4);
+  return ( id >> 4 );
 }
 
 /*
@@ -508,7 +648,7 @@ void ADS1256::SetChannal( uint8_t ch )
     1xxx = AINCOM (when NSEL3 = 1, NSEL2, NSEL1, NSEL0 are dont care)
     */
 
-  if( ch >= ch_n ) {
+  if( ch >= ch_max ) {
     return;
   }
   WriteReg( REG_MUX, (ch << 4) | (1 << 3) );  /* Bit3 = 1, AINN connection AINCOM */
@@ -626,7 +766,7 @@ int32_t ADS1256::ReadData()
  */
 int32_t ADS1256::GetAdc( uint8_t ch )
 {
-  if( ch >= ch_n ) {
+  if( ch >= ch_max ) {
     return 0;
   }
 
@@ -708,6 +848,7 @@ uint8_t ADS1256::Scan()
 
 void ADS1256::clear()
 {
+  volts.assign( muxs.size(), 0.0 );
   for( auto &v : AdcNow ) {
     v = 0;
   }
@@ -766,7 +907,8 @@ int init_hw()
 void show_help()
 {
   cout << "ads1256_da usage: \n";
-  cout << "ads1256_da [-h] [-d] [-t t_dly,us ] [ -c channels ] [ -g gain ] [ -D drate ] [ -n iterations ] [ -r ref_volt ] [ -o file ]\n";
+  cout << "ads1256_da [-h] [-d] [-t t_dly,us ] [ -c channels ] \n";
+  cout << "   or [ -C c1-c2,c3 ] [ -g gain ] [ -D drate ] [ -n iterations ] [ -r ref_volt ] [ -o file ]\n";
 }
 
 
@@ -777,7 +919,8 @@ int main( int argc, char **argv )
   int debug = 0;             // -d
   uint32_t t_dly = 1000;     // in ms, -t
   uint32_t N = 1000;         // -n
-  uint8_t  n_ch = 8;         // -c
+  int   n_ch = -1;      // -c
+  string   ch_specs;         // -C
   int      gain = 1;         // -c
   int      drate = -1;       // -D -1 = auto
   double   ref_volt = 2.484; // -r
@@ -785,21 +928,40 @@ int main( int argc, char **argv )
   bool do_fout = false;
 
   int op; // TODO: -q 0 1 2   -C 1,5,4-2,3 -T - ideal time output
-  while( ( op = getopt( argc, argv, "hdt:n:g:c:D:r:o:" ) ) != -1 ) {
+  while( ( op = getopt( argc, argv, "hdt:n:g:c:C:D:r:o:" ) ) != -1 ) {
     switch( op ) {
       case 'h' : show_help(); return 0;
       case 'd' : ++debug; break;
       case 't' : t_dly = strtol( optarg, 0, 0 ); break;
       case 'n' : N     = strtol( optarg, 0, 0 ); break;
-      case 'c' : n_ch  = (uint8_t) strtol( optarg, 0, 0 ); break;
+      case 'c' : n_ch  = strtol( optarg, 0, 0 ); break;
       case 'g' : gain  = strtol( optarg, 0, 0 ); break;
       case 'D' : drate  = strtol( optarg, 0, 0 ); break;
       case 'r' : ref_volt  = strtod( optarg, 0 ); break;
       case 'o' : ofn  = optarg; break;
+      case 'C' : ch_specs  = optarg; break;
       default:
         cerr << "Error: unknown or bad option '" << (char)(optopt) << endl;
         show_help();
         return 1;
+    }
+  }
+
+  ADS1256 adc;
+  adc.setRefVolt( ref_volt );
+
+  if( n_ch > 0 ) {
+    if( ! ch_specs.empty() ) {
+      cerr << "Error: both n_ch and ch_specs found" << endl;
+      return 1;
+    }
+    adc.calc_muxs_n( n_ch );
+  } else {
+    if( ! ch_specs.empty() ) {
+      adc.calc_muxs_spec( ch_specs );
+    } else {
+      n_ch = 8;
+      adc.calc_muxs_n( n_ch );
     }
   }
 
@@ -826,9 +988,22 @@ int main( int argc, char **argv )
   uint32_t t_add_ns = ( t_dly % 1000 ) * 1000000;
 
   if( debug > 0 ) {
-    cerr << "N= " << N << " t_dly= " << t_dly << "n_ch= " << n_ch
+    cerr << "N= " << N << " t_dly= " << t_dly << " n_ch= " << adc.get_ch_n()
          << " gain= " << gain << " gain_idx= " << (int)(gain_idx) <<" ref_volt= " << ref_volt
          << " t_add_sec= " << t_add_sec << " t_add_ns= " << t_add_ns << endl;
+  }
+  if( debug > 1 ) {
+    auto m = adc.getMuxs();
+    cerr << hex;
+    for( auto v : m ) {
+      cerr << (unsigned)v << ' ';
+    }
+    cerr << dec << endl;
+  }
+
+  if( adc.get_ch_n() < 1 ) {
+    cerr << "Error: nothing to measure" << endl;
+    return 1;
   }
 
   ofstream os;
@@ -844,7 +1019,6 @@ int main( int argc, char **argv )
     return 2;
   }
 
-  ADS1256 adc;
   uint8_t id = adc.ReadChipID();
   cerr << "\r\n ID= " << (int)id << " (must be 3)"<< endl;
   if( id != 3 )  {
@@ -859,16 +1033,11 @@ int main( int argc, char **argv )
 
   adc.StartScan( 0 );
 
-  //if( Scan() == 0)
-  //{
-  //continue;
-  //}
-
   struct timespec ts0, ts1, tsc;
   clock_gettime( CLOCK_MONOTONIC, &ts0 ); ts1 = ts1; // just to make GCC happy
 
-  int32_t adc_d[8];
-  double volt[8];
+  /// int32_t adc_d[8];
+  /// double volt[8];
 
   string obuf;
   obuf.reserve( 256 );
@@ -892,11 +1061,15 @@ int main( int argc, char **argv )
     double dt = tsc.tv_sec - ts0.tv_sec + 1e-9 * (tsc.tv_nsec - ts0.tv_nsec);
 
     cout << setfill('0') << setw(8) << i_n << ' ' << showpoint  << setw(8) << setprecision(4) << dt;
-    for( int i = 0; i < n_ch; i++ ) {
-      adc_d[i] = adc.GetAdc(i);
-      volt[i] = (double)adc_d[i] * ref_volt / gain / 0x400000;
-      cout << ' ' << setw(10) << setprecision(8) << volt[i];
+    adc.measureLine();
+    for( auto v : adc.getVolts() ) {
+       cout << ' ' << setw(10) << setprecision(8) << v;
     }
+    // for( int i = 0; i < n_ch; i++ ) {
+    //   adc_d[i] = adc.GetAdc(i);
+    //   volt[i] = (double)adc_d[i] * ref_volt / gain / 0x400000;
+    //   cout << ' ' << setw(10) << setprecision(8) << volt[i];
+    // }
     cout << ' ' << n_wait << endl;
 
     ts1.tv_sec  += t_add_sec;
