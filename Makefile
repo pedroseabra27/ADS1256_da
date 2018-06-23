@@ -3,10 +3,16 @@ PROJ_NAME=ads1256_da
 LINK=$(CXX)
 #LINK=$(CC)
 
+uname_m := $(shell uname -m)
+
 SRCS = ads1256_da.cpp
-# SRCS += xxx.cpp
+
+ifeq ($(uname_m),armv7l)
+  LIBS= -lbcm2835
+else
+  SRCS += bcm_fake.c
+endif
 #
-LIBS= -lbcm2835
 
 ###################################################
 

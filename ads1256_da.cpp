@@ -54,7 +54,11 @@ inline void RST_0() {  bcm2835_gpio_write( RST, LOW );  }
 
 inline void  bsp_DelayUS( uint64_t micros )
 {
+#ifdef __arm__
   bcm2835_delayMicroseconds( micros );
+#else
+  usleep( micros );
+#endif
 }
 
 class ADS1256 {
@@ -913,4 +917,5 @@ int main( int argc, char **argv )
 
   return 0;
 }
+
 
