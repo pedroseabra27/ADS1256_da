@@ -145,7 +145,6 @@ class ADS1256 {
    };
 
    ADS1256();
-   void StartScan( uint8_t ucScanMode );
    void sendByte( uint8_t data );
    void sendBytes( uint8_t d0, uint8_t d1 );
    void sendBytes( uint8_t d0, uint8_t d1, uint8_t d2 );
@@ -162,18 +161,13 @@ class ADS1256 {
    uint8_t ReadReg( uint8_t RegID );
    void WriteCmd( uint8_t cmd );
    uint8_t ReadChipID();
-   void SetChannal( uint8_t ch );
-   void SetDiffChannal( uint8_t ch );
    int  WaitDRDY();
    int32_t ReadData();
    int measureLine();
    void setRefVolt( double rv ) { ref_volt = rv; }
    double getRefVolt() const { return ref_volt; }
 
-   int32_t GetAdc( uint8_t ch );
    const vector<double>& getVolts() const { return volts; }
-   void ISR();
-   uint8_t Scan();
    void clear();
    int get_ch_n() const { return muxs.size(); };
    const vector<uint8_t>& getMuxs() const { return muxs; }
@@ -189,9 +183,6 @@ class ADS1256 {
    vector<uint8_t> muxs;
    Drate DataRate = SPS_15;
    bool need_start = true;
-   int32_t AdcNow[ch_max];  //* ADC  Conversion value TODO: vector, size depend on ch_n
-   uint8_t Channel =  0;  //* The current channel
-   uint8_t ScanMode = 0;  //* Scanning mode, 0=Single-ended input 8 channels; 1=Differential input  4 channels
    int writeMux( uint8_t m );
 };
 
@@ -411,29 +402,35 @@ int ADS1256::measureLine()
   return n;
 }
 
-/*
- *********************************************************************************************************
- *  name: ADS1256::StartScan
- *  function: Configuration DRDY PIN for external interrupt is triggered
- *  parameter: ucDiffMode : 0  Single-ended input  8 channels 1 Differential input  4 channe
- *  The return value: NULL
- *********************************************************************************************************
- */
-void ADS1256::StartScan( uint8_t ucScanMode )
+int32_t ADS1256::ReadData()
 {
-  ScanMode = ucScanMode;
-  Channel = 0;
-  clear();
+  uint8_t buf[3];
+
+  CS_guard csg;
+
+  sendByte( CMD_RDATA );  // read ADC command
+
+  DelayDATA();  // delay time
+  WaitDRDY();
+
+  /*Read the sample results 24bit*/
+  buf[0] = recvByte();
+  buf[1] = recvByte();
+  buf[2] = recvByte();
+
+  uint32_t
+  read  =  ( (uint32_t)buf[0] << 16 ) & 0x00FF0000;
+  read |=  ( (uint32_t)buf[1] <<  8 );  /* Pay attention to It is wrong   read |= (buf[1] << 8) */
+  read |=  buf[2];
+
+  if( read & 0x800000 ) { // Extend a signed number
+    read |= 0xFF000000;
+  }
+
+  return (int32_t)read;
 }
 
-/*
- *********************************************************************************************************
- *  name: ADS1256::sendByte
- *  function: SPI bus to send 8 bit data
- *  parameter: data:  data
- *  The return value: NULL
- *********************************************************************************************************
- */
+
 void ADS1256::sendByte( uint8_t d0 )
 {
   bsp_DelayUS( time_send );
@@ -549,7 +546,6 @@ int  ADS1256::CfgADC( AdcGain gain, Drate drate )
       111 = 64
       */
   buf[2] = (0 << 5) | (0 << 3) |  gain;
-  //WriteReg(REG_ADCON, (0 << 5) | (0 << 2) | (GAIN_1 << 1));  /*choose 1: gain 1 ;input 5V/
   buf[3] = drateInfo[drate].regval;
 
   CS_guard csg;
@@ -611,14 +607,6 @@ void ADS1256::WriteCmd( uint8_t cmd )
   sendByte( cmd );
 }
 
-/*
- *********************************************************************************************************
- *  name: ADS1256::ReadChipID
- *  function: Read the chip ID
- *  parameter: cmd : NULL
- *  The return value: four high status register
- *********************************************************************************************************
- */
 uint8_t ADS1256::ReadChipID()
 {
   if( ! WaitDRDY() ) {
@@ -628,99 +616,10 @@ uint8_t ADS1256::ReadChipID()
   return ( id >> 4 );
 }
 
-/*
- *********************************************************************************************************
- *  name: ADS1256::SetChannal
- *  function: Configuration channel number
- *  parameter:  ch:  channel number  0--7
- *********************************************************************************************************
- */
-void ADS1256::SetChannal( uint8_t ch )
-{
-  /*
-     Bits 7-4 PSEL3, PSEL2, PSEL1, PSEL0: Positive Input Channel (AINP) Select
-     0000 = AIN0 (default)
-     0001 = AIN1
-     0010 = AIN2 (ADS1256 only)
-     0011 = AIN3 (ADS1256 only)
-     0100 = AIN4 (ADS1256 only)
-     0101 = AIN5 (ADS1256 only)
-     0110 = AIN6 (ADS1256 only)
-     0111 = AIN7 (ADS1256 only)
-     1xxx = AINCOM (when PSEL3 = 1, PSEL2, PSEL1, PSEL0 are dont care)
-
-    NOTE: When using an ADS1255 make sure to only select the available inputs.
-
-    Bits 3-0 NSEL3, NSEL2, NSEL1, NSEL0: Negative Input Channel (AINN)Select
-    0000 = AIN0
-    0001 = AIN1 (default)
-    0010 = AIN2 (ADS1256 only)
-    0011 = AIN3 (ADS1256 only)
-    0100 = AIN4 (ADS1256 only)
-    0101 = AIN5 (ADS1256 only)
-    0110 = AIN6 (ADS1256 only)
-    0111 = AIN7 (ADS1256 only)
-    1xxx = AINCOM (when NSEL3 = 1, NSEL2, NSEL1, NSEL0 are dont care)
-    */
-
-  if( ch >= ch_max ) {
-    return;
-  }
-  WriteReg( REG_MUX, (ch << 4) | (1 << 3) );  /* Bit3 = 1, AINN connection AINCOM */
-}
 
 /*
- *********************************************************************************************************
- *  name: ADS1256::SetDiffChannal
- *  function: The configuration difference channel
- *  parameter:  ch:  channel number  0--3
- *  The return value:  four high status register
- *********************************************************************************************************
- */
-void ADS1256::SetDiffChannal( uint8_t ch )
-{
-  /*
-     Bits 7-4 PSEL3, PSEL2, PSEL1, PSEL0: Positive Input Channel (AINP) Select
-     0000 = AIN0 (default)
-     0001 = AIN1
-     0010 = AIN2 (ADS1256 only)
-     0011 = AIN3 (ADS1256 only)
-     0100 = AIN4 (ADS1256 only)
-     0101 = AIN5 (ADS1256 only)
-     0110 = AIN6 (ADS1256 only)
-     0111 = AIN7 (ADS1256 only)
-     1xxx = AINCOM (when PSEL3 = 1, PSEL2, PSEL1, PSEL0 are dont care)
-
-    NOTE: When using an ADS1255 make sure to only select the available inputs.
-
-    Bits 3-0 NSEL3, NSEL2, NSEL1, NSEL0: Negative Input Channel (AINN)Select
-    0000 = AIN0
-    0001 = AIN1 (default)
-    0010 = AIN2 (ADS1256 only)
-    0011 = AIN3 (ADS1256 only)
-    0100 = AIN4 (ADS1256 only)
-    0101 = AIN5 (ADS1256 only)
-    0110 = AIN6 (ADS1256 only)
-    0111 = AIN7 (ADS1256 only)
-    1xxx = AINCOM (when NSEL3 = 1, NSEL2, NSEL1, NSEL0 are dont care)
-    */
-
-  if( ch == 0) {
-    WriteReg( REG_MUX, (0 << 4) | 1 );  //* DiffChannal  AIN0 AIN1
-  } else if( ch == 1 )  {
-    WriteReg( REG_MUX, (2 << 4) | 3 );  //* DiffChannal   AIN2 AIN3
-  } else if( ch == 2 ) {
-    WriteReg( REG_MUX, (4 << 4) | 5 );  //* DiffChannal    AIN4 AIN5
-  } else if( ch == 3 ) {
-    WriteReg( REG_MUX, (6 << 4) | 7 );  //* DiffChannal   AIN6 AIN7
-  }
-}
-
-/*
- *********************************************************************************************************
  *  name: ADS1256::WaitDRDY
- *  function: delay time  wait for automatic calibration
- *  parameter:  NULL
+ *  function: wait for data ready signal
  *  The return value:  0 - timeout, 1 = ok
  *********************************************************************************************************
  */
@@ -735,139 +634,10 @@ int ADS1256::WaitDRDY()
   return 0;
 }
 
-/*
- *********************************************************************************************************
- *  name: ADS1256::ReadData
- *  function: read ADC value
- *  parameter: NULL
- *  The return value:  NULL
- *********************************************************************************************************
- */
-int32_t ADS1256::ReadData()
-{
-  uint8_t buf[3];
-
-  CS_guard csg;
-
-  sendByte( CMD_RDATA );  // read ADC command
-
-  DelayDATA();  // delay time
-  WaitDRDY();
-
-  /*Read the sample results 24bit*/
-  buf[0] = recvByte();
-  buf[1] = recvByte();
-  buf[2] = recvByte();
-
-  uint32_t
-  read  =  ( (uint32_t)buf[0] << 16 ) & 0x00FF0000;
-  read |=  ( (uint32_t)buf[1] <<  8 );  /* Pay attention to It is wrong   read |= (buf[1] << 8) */
-  read |=  buf[2];
-
-  if( read & 0x800000 ) { // Extend a signed number
-    read |= 0xFF000000;
-  }
-
-  return (int32_t)read;
-}
-
-
-/*
- *********************************************************************************************************
- *  name: ADS1256::GetAdc
- *  function: read ADC value
- *  parameter:  channel number 0--7
- *  The return value:  ADC vaule (signed number)
- *********************************************************************************************************
- */
-int32_t ADS1256::GetAdc( uint8_t ch )
-{
-  if( ch >= ch_max ) {
-    return 0;
-  }
-
-  return  AdcNow[ch];
-}
-
-/*
- *********************************************************************************************************
- *  name: ISR
- *  function: Collection procedures
- *  parameter: NULL
- *  The return value:  NULL
- *********************************************************************************************************
- */
-void ADS1256::ISR()
-{
-  if( ScanMode == 0 ) {    //  0=Single-ended input, 8 channel;  1= Differential input  4 channels
-    SetChannal( Channel ); //  Switch channel mode
-    bsp_DelayUS( time_postChan );
-
-    WriteCmd( CMD_SYNC );
-    bsp_DelayUS( time_postChan );
-
-    WriteCmd(CMD_WAKEUP);
-    bsp_DelayUS( time_wakeup );
-
-    if( Channel == 0 ) { // What??
-      AdcNow[7] = ReadData();
-    } else {
-      AdcNow[Channel-1] = ReadData();
-    }
-
-    if( ++Channel >= 8 )  {
-      Channel = 0;
-    }
-  }  else  { //* DiffChannal
-
-    SetDiffChannal( Channel );  //* change DiffChannal
-    bsp_DelayUS( time_postChan );
-
-    WriteCmd( CMD_SYNC );
-    bsp_DelayUS( time_postChan );
-
-    WriteCmd( CMD_WAKEUP );
-    bsp_DelayUS( time_wakeup );
-
-    if( Channel == 0 ) {
-      AdcNow[3] = ReadData();
-    } else {
-      AdcNow[Channel-1] = ReadData();
-    }
-
-    if( ++Channel >= 4 ) {
-      Channel = 0;
-    }
-  }
-}
-
-/*
- *********************************************************************************************************
- *  name: ADS1256::Scan
- *  function:
- *  parameter:NULL
- *  The return value:  1
- *********************************************************************************************************
- */
-uint8_t ADS1256::Scan()
-{
-  clear();
-  if( DRDY_IS_LOW() ) {
-    ISR();
-    return 1;
-  }
-  // WaitDRDY();
-  // ISR();
-
-  return 0;
-}
 
 void ADS1256::clear()
 {
   volts.assign( muxs.size(), 0.0 );
-  for( auto &v : AdcNow ) {
-    v = 0;
-  }
 }
 
 /*
@@ -915,10 +685,10 @@ int init_hw()
   bcm2835_spi_setBitOrder( BCM2835_SPI_BIT_ORDER_LSBFIRST );    // The default LSBFIRST
   bcm2835_spi_setDataMode( BCM2835_SPI_MODE1 );                  // The default = MODE1
   bcm2835_spi_setClockDivider( BCM2835_SPI_CLOCK_DIVIDER_1024 ); // The default = 1024
-  bcm2835_gpio_fsel(SPICS, BCM2835_GPIO_FSEL_OUTP);//
-  bcm2835_gpio_write(SPICS, HIGH);
-  bcm2835_gpio_fsel(DRDY, BCM2835_GPIO_FSEL_INPT);
-  bcm2835_gpio_set_pud(DRDY, BCM2835_GPIO_PUD_UP);
+  bcm2835_gpio_fsel( SPICS, BCM2835_GPIO_FSEL_OUTP );
+  bcm2835_gpio_write( SPICS, HIGH );
+  bcm2835_gpio_fsel( DRDY, BCM2835_GPIO_FSEL_INPT );
+  bcm2835_gpio_set_pud( DRDY, BCM2835_GPIO_PUD_UP );
   return 1;
 }
 
@@ -937,7 +707,7 @@ int main( int argc, char **argv )
   int debug = 0;             // -d
   uint32_t t_dly = 1000;     // in ms, -t
   uint32_t N = 1000;         // -n
-  int   n_ch = -1;      // -c
+  int   n_ch = -1;           // -c
   string   ch_specs;         // -C
   int      gain = 1;         // -c
   int      drate = -1;       // -D -1 = auto
@@ -945,7 +715,7 @@ int main( int argc, char **argv )
   string ofn;                // -o
   bool do_fout = false;
 
-  int op; // TODO: -q 0 1 2   -C 1,5,4-2,3 -T - ideal time output
+  int op; // TODO: -q 0 1 2, -B - buffer
   while( ( op = getopt( argc, argv, "hdt:n:g:c:C:D:r:o:" ) ) != -1 ) {
     switch( op ) {
       case 'h' : show_help(); return 0;
@@ -1049,13 +819,8 @@ int main( int argc, char **argv )
     return 5;
   }
 
-  adc.StartScan( 0 );
-
   struct timespec ts0, ts1, tsc;
   clock_gettime( CLOCK_MONOTONIC, &ts0 ); ts1 = ts1; // just to make GCC happy
-
-  /// int32_t adc_d[8];
-  /// double volt[8];
 
   string obuf;
   obuf.reserve( 256 );
@@ -1075,14 +840,19 @@ int main( int argc, char **argv )
     }
     double dt = tsc.tv_sec - ts0.tv_sec + 1e-9 * (tsc.tv_nsec - ts0.tv_nsec);
 
-    cout << setfill('0') << setw(8) << i_n << ' ' << showpoint  << setw(8) << setprecision(4) << dt;
+    s_os.str().clear();
+    s_os << setfill('0') << setw(8) << i_n << ' ' << showpoint  << setw(8) << setprecision(4) << dt; // TODO: theor time
 
     adc.measureLine();
 
     for( auto v : adc.getVolts() ) {
-       cout << ' ' << setw(10) << setprecision(8) << v;
+       s_os << ' ' << setw(10) << setprecision(8) << v;
     }
-    cout << ' ' << endl;
+    s_os << ' ' << endl;
+    cout << s_os.str();
+    if( do_fout ) {
+      os << s_os.str();
+    }
 
     ts1.tv_sec  += t_add_sec;
     ts1.tv_nsec += t_add_ns; // compensation
@@ -1093,6 +863,9 @@ int main( int argc, char **argv )
     clock_nanosleep( CLOCK_MONOTONIC, TIMER_ABSTIME, &ts1, 0 );
   }
   cout << endl;
+  if( do_fout ) {
+    os << endl;
+  }
   if( break_loop ) {
     cerr << "Loop was terminated" << endl;
   }
