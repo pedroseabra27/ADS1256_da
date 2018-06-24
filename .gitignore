@@ -4,6 +4,9 @@ ads1256_da
 *.o
 *.obj
 
+# data files
+*.txt
+
 # Compiled Dynamic libraries
 *.so
 *.so.*

@@ -180,7 +180,7 @@ class ADS1256 {
    static const unsigned ch_max = 8;
    static const AdcGainInfo gainInfo[GAIN_NUM];
    static const AdcDrateInfo drateInfo[SPS_MAX];
-   double ref_volt = 2.48;
+   double ref_volt = 2.474;
    AdcGain Gain   = GAIN_1;
    int gainval = 1;
    uint32_t setting_dly = 400180;
@@ -691,7 +691,8 @@ void show_help()
 {
   cout << "ads1256_da usage: \n";
   cout << "ads1256_da [-h] [-d] [-q level] [-t t_dly,us ] [ -c channels ] \n";
-  cout << "   or [ -C c1-c2,c3 ] [ -g gain ] [ -D drate ] [ -n iterations ] [ -r ref_volt ] [ -o file ]\n";
+  cout << "   or [ -C c1-c2,c3 ] [ -g gain ] [ -D drate ] [ -n iterations ]\n";
+  cout << "   [ -r ref_volt ] [ -o file ] [-S]\n";
 }
 
 
@@ -707,12 +708,13 @@ int main( int argc, char **argv )
   string   ch_specs;         // -C
   int      gain = 1;         // -c
   int      drate = -1;       // -D -1 = auto
-  double   ref_volt = 2.484; // -r
+  double   ref_volt = 2.474; // -r
   string ofn;                // -o
+  bool do_stat = false;      // -S
   bool do_fout = false;
 
   int op; // TODO: -q 0 1 2, -B - buffer
-  while( ( op = getopt( argc, argv, "hdq:t:n:g:c:C:D:r:o:" ) ) != -1 ) {
+  while( ( op = getopt( argc, argv, "hdq:t:n:g:c:C:D:r:o:S" ) ) != -1 ) {
     switch( op ) {
       case 'h' : show_help(); return 0;
       case 'd' : ++debug; break;
@@ -725,6 +727,7 @@ int main( int argc, char **argv )
       case 'r' : ref_volt  = strtod( optarg, 0 ); break;
       case 'o' : ofn  = optarg; break;
       case 'C' : ch_specs  = optarg; break;
+      case 'S' : do_stat  = true; break;
       default:
         cerr << "Error: unknown or bad option '" << (char)(optopt) << endl;
         show_help();
@@ -772,8 +775,10 @@ int main( int argc, char **argv )
   uint32_t t_add_sec = t_dly / 1000;
   uint32_t t_add_ns = ( t_dly % 1000 ) * 1000000;
 
+  int ch_n = adc.get_ch_n();
+
   if( debug > 0 ) {
-    cerr << "N= " << N << " t_dly= " << t_dly << " n_ch= " << adc.get_ch_n()
+    cerr << "N= " << N << " t_dly= " << t_dly << " ch_n= " << ch_n
          << " gain= " << gain << " gain_idx= " << (int)(gain_idx) <<" ref_volt= " << ref_volt
          << " t_add_sec= " << t_add_sec << " t_add_ns= " << t_add_ns << endl;
   }
@@ -786,7 +791,7 @@ int main( int argc, char **argv )
     cerr << dec << endl;
   }
 
-  if( adc.get_ch_n() < 1 ) {
+  if( ch_n < 1 ) {
     cerr << "Error: nothing to measure" << endl;
     return 1;
   }
@@ -798,6 +803,8 @@ int main( int argc, char **argv )
       do_fout = true;
     }
   }
+
+  vector<double> v_sums( ch_n, 0.0 ), v_sums2( ch_n, 0.0 );
 
   if( ! init_hw() ) {
     cerr << "Fail to init hardware" << endl;
@@ -829,7 +836,8 @@ int main( int argc, char **argv )
   signal( SIGINT, sigint_handler );
 
 
-  for( uint32_t i_n=0; i_n < N && ! break_loop; ++i_n ) {
+  uint32_t i_n = 0; // need outside
+  for( ; i_n < N && ! break_loop; ++i_n ) {
 
     clock_gettime( CLOCK_MONOTONIC, &tsc );
     if( i_n == 0 ) {
@@ -842,8 +850,16 @@ int main( int argc, char **argv )
 
     adc.measureLine();
 
-    for( auto v : adc.getVolts() ) {
-       s_os << ' ' << setw(10) << setprecision(8) << v;
+    {
+      int i=0;
+      for( auto v : adc.getVolts() ) {
+        s_os << ' ' << setw(10) << setprecision(8) << v;
+        if( do_stat ) {
+          v_sums[i]  += v;
+          v_sums2[i] += v*v;
+        }
+        ++i;
+      }
     }
 
     s_os << ' ' << endl;
@@ -875,6 +891,22 @@ int main( int argc, char **argv )
 
   bcm2835_spi_end();
   bcm2835_close();
+
+  if( do_stat ) {
+    cout << "# Statistics: (n=" << i_n << ") avarages:" << endl;
+    for( auto v : v_sums ) {
+      cout << setw(10) << setprecision(8) << ( v / i_n ) << ' ';
+    }
+    cout << endl;
+    cout << "# Std deviations:" << endl;
+    for( unsigned i=0; i<v_sums.size(); ++i ) {
+      cout << setw(10) << setprecision(8) << sqrt(  v_sums2[i] * i_n - v_sums[i] * v_sums[i]  ) / i_n << ' ';
+      // cout << setw(10) << setprecision(8) << sqrt( ( v_sums2[i] ) / i_n ) << ' ';
+      // cout << setw(10) << setprecision(8) << ( ( v_sums2[i] - v_sums[i] * v_sums[i] ) / i_n ) << ' ';
+      // cout << setw(10) << setprecision(8) << v_sums2[i] << ' ' << v_sums[i]*v_sums[i] << "  |  ";
+    }
+    cout << endl;
+  }
 
   return 0;
 }
