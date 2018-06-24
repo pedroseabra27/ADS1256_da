@@ -840,7 +840,7 @@ int main( int argc, char **argv )
     }
     double dt = tsc.tv_sec - ts0.tv_sec + 1e-9 * (tsc.tv_nsec - ts0.tv_nsec);
 
-    s_os.str().clear();
+    s_os.str(""); s_os.clear();
     s_os << setfill('0') << setw(8) << i_n << ' ' << showpoint  << setw(8) << setprecision(4) << dt; // TODO: theor time
 
     adc.measureLine();
