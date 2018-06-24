@@ -66,11 +66,11 @@ inline void  bsp_DelayUS( uint64_t micros )
 class ADS1256 {
   public:
    enum AdcTimes {
-     time_send = 2,
-     time_postcfg = 50,
-     time_delayData  = 10,
-     time_postChan = 5,
-     time_wakeup = 25
+     time_send = 2,         // really 4 tau, 5.2e-7
+     time_postcfg = 50,     //
+     time_delayData  = 10,  //
+     time_postChan = 5,     //
+     time_wakeup = 25       //
    };
    enum AdcGain {
      GAIN_1      = 0,
@@ -109,6 +109,8 @@ class ADS1256 {
      Drate    idx;
      uint16_t val;
      uint8_t  regval;
+     uint32_t t18; // setting time in us, table 13
+     uint32_t t19; // setting time in us, table 13
    };
 
    enum RegNum { //* Register definitions Table 23. Register Map --- ADS1256 datasheet Page 30
@@ -156,16 +158,19 @@ class ADS1256 {
    int calc_muxs_spec( const string &spec );
    int  CfgADC( AdcGain gain, Drate drate );
    void DelayDATA() { bsp_DelayUS( time_delayData ); } // The minimum time delay 6.5us
-   uint8_t recvByte() {  return bcm2835_spi_transfer( 0xFF ); }
    void WriteReg( uint8_t RegID, uint8_t RegValue );
+   void WriteReg_noCS( uint8_t RegID, uint8_t RegValue );
    uint8_t ReadReg( uint8_t RegID );
    void WriteCmd( uint8_t cmd );
    uint8_t ReadChipID();
-   int  WaitDRDY();
-   int32_t ReadData();
+   int  WaitDRDY( uint32_t us = 1000 );
+   double ReadData();
+   double MSW_ReadData( uint8_t m ); // wait, set MUX, sync, wakeup, real old data
    int measureLine();
+   int measureLine1(); // only one (first) channel
    void setRefVolt( double rv ) { ref_volt = rv; }
    double getRefVolt() const { return ref_volt; }
+
 
    const vector<double>& getVolts() const { return volts; }
    void clear();
@@ -178,12 +183,17 @@ class ADS1256 {
    double ref_volt = 2.48;
    AdcGain Gain   = GAIN_1;
    int gainval = 1;
-   uint8_t curr_reg_mux = 0xFF;
+   uint32_t setting_dly = 400180;
+   uint32_t data_dly    = 400000;
    vector<double> volts;
    vector<uint8_t> muxs;
-   Drate DataRate = SPS_15;
+   Drate DataRate = SPS_2d5;
    bool need_start = true;
-   int writeMux( uint8_t m );
+
+   uint8_t recvByte() {  return bcm2835_spi_transfer( 0xFF ); }
+   void cmdSync()   {   sendByte( CMD_SYNC   );  bsp_DelayUS( time_postChan ); }
+   void cmdWakeUp() {   sendByte( CMD_WAKEUP );  bsp_DelayUS( time_wakeup   ); }
+   void cmdSyncWakeUp() { cmdSync(); cmdWakeUp();  }
 };
 
 const ADS1256::AdcGainInfo ADS1256::gainInfo[ADS1256::GAIN_NUM] = {
@@ -197,22 +207,23 @@ const ADS1256::AdcGainInfo ADS1256::gainInfo[ADS1256::GAIN_NUM] = {
 };
 
 const ADS1256::AdcDrateInfo ADS1256::drateInfo[ADS1256::SPS_MAX] = {
-  { SPS_30000, 30000, 0xF0 },
-  { SPS_15000, 15000, 0xE0 },
-  { SPS_7500,   7500, 0xD0 },
-  { SPS_3750,   3750, 0xC0 },
-  { SPS_2000,   2000, 0xB0 },
-  { SPS_1000,   1000, 0xA1 },
-  { SPS_500,     500, 0x92 },
-  { SPS_100,     100, 0x82 },
-  { SPS_60,       60, 0x72 },
-  { SPS_50,       50, 0x63 },
-  { SPS_30,       30, 0x53 },
-  { SPS_25,       25, 0x43 },
-  { SPS_15,       15, 0x33 },
-  { SPS_10,       10, 0x23 },
-  { SPS_5,         5, 0x13 },
-  { SPS_2d5,       2, 0x03 } // really 2.5
+//   idx         val  regval   t18    t19
+  { SPS_30000, 30000, 0xF0,    210,    229 },
+  { SPS_15000, 15000, 0xE0,    250,    262 },
+  { SPS_7500,   7500, 0xD0,    310,    329 },
+  { SPS_3750,   3750, 0xC0,    440,    462 },
+  { SPS_2000,   2000, 0xB0,    680,    695 },
+  { SPS_1000,   1000, 0xA1,   1180,   1195 },
+  { SPS_500,     500, 0x92,   2180,   2193 },
+  { SPS_100,     100, 0x82,  10180,  10204 },
+  { SPS_60,       60, 0x72,  16840,  16949 },
+  { SPS_50,       50, 0x63,  20180,  20000 },
+  { SPS_30,       30, 0x53,  33510,  33333 },
+  { SPS_25,       25, 0x43,  40180,  40000 },
+  { SPS_15,       15, 0x33,  66840,  66667 },
+  { SPS_10,       10, 0x23, 100180, 100000 },
+  { SPS_5,         5, 0x13, 200180, 200000 },
+  { SPS_2d5,       2, 0x03, 400180, 400000 } // really 2.5
 };
 
 
@@ -281,7 +292,6 @@ int ADS1256::calc_muxs_n( int n )
     }
   }
   clear();
-  curr_reg_mux = 0xFF;
   return muxs.size();
 }
 
@@ -349,26 +359,9 @@ int ADS1256::calc_muxs_spec( const string &spec )
       return 0;
   }
 
-  curr_reg_mux = 0xFF;
   return muxs.size();
 }
 
-int ADS1256::writeMux( uint8_t m )
-{
-  WaitDRDY();
-  if( m == curr_reg_mux ) {
-    return 1;
-  }
-  WriteReg( REG_MUX, m );
-  bsp_DelayUS( time_postChan );
-  WriteCmd( CMD_SYNC );
-  bsp_DelayUS( time_postChan );
-
-  WriteCmd( CMD_WAKEUP );
-  bsp_DelayUS( time_wakeup );
-  curr_reg_mux = m;
-  return 2;
-}
 
 int ADS1256::measureLine()
 {
@@ -378,31 +371,47 @@ int ADS1256::measureLine()
   if( mc < 1 ) {
     return 0;
   }
-
-  if( need_start ) {
-    WriteCmd( CMD_SYNC );
-    bsp_DelayUS( time_postChan );
-
-    WriteCmd( CMD_WAKEUP );
-    bsp_DelayUS( time_wakeup );
-    need_start = false;
+  if( mc == 1 ) {
+    return measureLine1();
   }
 
-  writeMux( muxs[0] );
+  CS_guard csg;
+
+  WriteReg_noCS( REG_MUX, muxs[0] );
+  bsp_DelayUS( time_postChan );
+
+  cmdSyncWakeUp();
+  WaitDRDY( data_dly );
 
   for( int i=0; i<mc; ++i ) {
-    int32_t vi = ReadData();
-    volts[i] = (double) vi * ref_volt / gainval / 0x400000;
-    ++n;
     int j = i+1;
     if( j >= mc ) { j  = 0; }
-    writeMux( muxs[j] );
+    volts[i] = MSW_ReadData( muxs[j] );
+    ++n;
   }
 
   return n;
 }
 
-int32_t ADS1256::ReadData()
+int ADS1256::measureLine1()
+{
+  if( muxs.size() < 1 ) {
+    return 0;
+  }
+
+  if( need_start ) {
+    WriteReg( REG_MUX, muxs[0] );
+    bsp_DelayUS( time_postChan );
+    cmdSyncWakeUp();
+    need_start = false;
+  }
+
+  WaitDRDY( data_dly );
+  volts[0] = ReadData();
+  return 1;
+}
+
+double ADS1256::ReadData()
 {
   uint8_t buf[3];
 
@@ -411,10 +420,8 @@ int32_t ADS1256::ReadData()
   sendByte( CMD_RDATA );  // read ADC command
 
   DelayDATA();  // delay time
-  WaitDRDY();
 
-  /*Read the sample results 24bit*/
-  buf[0] = recvByte();
+  buf[0] = recvByte(); // 24 bit
   buf[1] = recvByte();
   buf[2] = recvByte();
 
@@ -427,8 +434,40 @@ int32_t ADS1256::ReadData()
     read |= 0xFF000000;
   }
 
-  return (int32_t)read;
+  return (double)((int32_t)(read))  * ref_volt / gainval / 0x400000;
 }
+
+double ADS1256::MSW_ReadData( uint8_t m )
+{
+  WaitDRDY( data_dly );
+
+  bsp_DelayUS( time_postChan );
+
+  WriteReg_noCS( REG_MUX, m );
+  bsp_DelayUS( time_postChan );
+  cmdSyncWakeUp();
+
+  sendByte( CMD_RDATA );  // read ADC command
+
+  DelayDATA();  // delay time
+
+  uint8_t buf[3];
+  buf[0] = recvByte(); // 24 bit
+  buf[1] = recvByte();
+  buf[2] = recvByte();
+
+  uint32_t
+    read  =  ( (uint32_t)buf[0] << 16 ) & 0x00FF0000;
+  read |=  ( (uint32_t)buf[1] <<  8 );  /* Pay attention to It is wrong   read |= (buf[1] << 8) */
+  read |=  buf[2];
+
+  if( read & 0x800000 ) { // Extend a signed number
+    read |= 0xFF000000;
+  }
+
+  return (double)((int32_t)(read))  * ref_volt / gainval / 0x400000;
+}
+
 
 
 void ADS1256::sendByte( uint8_t d0 )
@@ -478,81 +517,31 @@ int  ADS1256::CfgADC( AdcGain gain, Drate drate )
   Gain = gain;
   gainval = gainInfo[gain].val;
   DataRate = drate;
+  setting_dly = drateInfo[DataRate].t18;
+  if( drate == SPS_2d5 ) {
+    data_dly = 400000;
+  } else {
+    data_dly = 1000000 / drateInfo[drate].val;
+  }
+  cerr << "# setting_dly= " << setting_dly << " data_dly= " << data_dly << endl;
 
-  if( ! WaitDRDY() ) {
+  if( ! WaitDRDY( setting_dly ) ) {
     return 0;
   }
 
   uint8_t buf[4];    /* Storage ads1256 register configuration parameters */
 
-  /*Status register define
-    Bits 7-4 ID3, ID2, ID1, ID0  Factory Programmed Identification Bits (Read Only)
-
-    Bit 3 ORDER: Data Output Bit Order
-    0 = Most Significant Bit First (default)
-    1 = Least Significant Bit First
-    Input data  is always shifted in most significant byte and bit first. Output data is always shifted out most significant
-    byte first. The ORDER bit only controls the bit order of the output data within the byte.
-
-    Bit 2 ACAL : Auto-Calibration
-    0 = Auto-Calibration Disabled (default)
-    1 = Auto-Calibration Enabled
-    When Auto-Calibration is enabled, self-calibration begins at the completion of the WREG command that changes
-    the PGA (bits 0-2 of ADCON register), DR (bits 7-0 in the DRATE register) or BUFEN (bit 1 in the STATUS register)
-    values.
-
-    Bit 1 BUFEN: Analog Input Buffer Enable
-    0 = Buffer Disabled (default)
-    1 = Buffer Enabled
-
-    Bit 0 DRDY :  Data Ready (Read Only)
-    This bit duplicates the state of the DRDY pin.
-
-    ACAL=1  enable  calibration
-    */
-  //buf[0] = (0 << 3) | (1 << 2) | (1 << 1);//enable the internal buffer
-
-  buf[0] = (0 << 3) | (1 << 2) | (0 << 1);  // The internal buffer is prohibited
-
-  //ADS1256::WriteReg(REG_STATUS, (0 << 3) | (1 << 2) | (1 << 1));
-
-  buf[1] = 0x08;
-
-  /*  ADCON: A/D Control Register (Address 02h)
-      Bit 7 Reserved, always 0 (Read Only)
-      Bits 6-5 CLK1, CLK0 : D0/CLKOUT Clock Out Rate Setting
-      00 = Clock Out OFF
-      01 = Clock Out Frequency = fCLKIN (default)
-      10 = Clock Out Frequency = fCLKIN/2
-      11 = Clock Out Frequency = fCLKIN/4
-      When not using CLKOUT, it is recommended that it be turned off. These bits can only be reset using the RESET pin.
-
-      Bits 4-3 SDCS1, SCDS0: Sensor Detect Current Sources
-      00 = Sensor Detect OFF (default)
-      01 = Sensor Detect Current = 0.5 uA
-      10 = Sensor Detect Current = 2 uA
-      11 = Sensor Detect Current = 10 uA
-      The Sensor Detect Current Sources can be activated to verify  the integrity of an external sensor supplying a signal to the
-      ADS1255/6. A shorted sensor produces a very small signal while an open-circuit sensor produces a very large signal.
-
-      Bits 2-0 PGA2, PGA1, PGA0: Programmable Gain Amplifier Setting
-      000 = 1 (default)
-      001 = 2
-      010 = 4
-      011 = 8
-      100 = 16
-      101 = 32
-      110 = 64
-      111 = 64
-      */
-  buf[2] = (0 << 5) | (0 << 3) |  gain;
-  buf[3] = drateInfo[drate].regval;
+  //       BitOrder     ACAL      Buffer
+  buf[0] = (0 << 3) | (1 << 2) | (1 << 1);   // STATUS. TODO: buffer ctl
+  buf[1] = muxs[0];                          // MUX
+  //         CLKxx     SDCSx
+  buf[2] = (0 << 5) | (0 << 3) |  gain;      // ADCON
+  buf[3] = drateInfo[drate].regval;          // DRATE
 
   CS_guard csg;
 
-  sendBytes( CMD_WREG | 0, 0x03 );  /* Write command register, send the register address, write */
-
-  sendBytes( buf, 4 );  /* Set the status, input channel, ADCON, outrate regs */
+  sendBytes( CMD_WREG | 0, 0x03 );  // Write command register, send the register address, write
+  sendBytes( buf, 4 );              // 4 low regs
 
   bsp_DelayUS( time_postcfg );
   return 1;
@@ -572,6 +561,11 @@ void ADS1256::WriteReg( uint8_t RegID, uint8_t RegValue )
 {
   CS_guard csg;
 
+  sendBytes( CMD_WREG | RegID, 0, RegValue );  //* Write command register, num, value
+}
+
+void ADS1256::WriteReg_noCS( uint8_t RegID, uint8_t RegValue )
+{
   sendBytes( CMD_WREG | RegID, 0, RegValue );  //* Write command register, num, value
 }
 
@@ -609,7 +603,7 @@ void ADS1256::WriteCmd( uint8_t cmd )
 
 uint8_t ADS1256::ReadChipID()
 {
-  if( ! WaitDRDY() ) {
+  if( ! WaitDRDY( setting_dly ) ) {
     return 0;
   }
   int8_t id = ReadReg( REG_STATUS );
@@ -623,12 +617,13 @@ uint8_t ADS1256::ReadChipID()
  *  The return value:  0 - timeout, 1 = ok
  *********************************************************************************************************
  */
-int ADS1256::WaitDRDY()
+int ADS1256::WaitDRDY( uint32_t us )
 {
-  for( uint32_t i = 0; i < 400000; ++i ) {
+  for( uint32_t i = 0; i < us; ++i ) {
     if( DRDY_IS_LOW() ) {
       return 1;
     }
+    usleep( 1 );
   }
   cerr << "WaitDRDY() Time Out ..." << endl;
   return 0;
@@ -695,7 +690,7 @@ int init_hw()
 void show_help()
 {
   cout << "ads1256_da usage: \n";
-  cout << "ads1256_da [-h] [-d] [-t t_dly,us ] [ -c channels ] \n";
+  cout << "ads1256_da [-h] [-d] [-q level] [-t t_dly,us ] [ -c channels ] \n";
   cout << "   or [ -C c1-c2,c3 ] [ -g gain ] [ -D drate ] [ -n iterations ] [ -r ref_volt ] [ -o file ]\n";
 }
 
@@ -705,6 +700,7 @@ void show_help()
 int main( int argc, char **argv )
 {
   int debug = 0;             // -d
+  int q_level = 0;           // -q
   uint32_t t_dly = 1000;     // in ms, -t
   uint32_t N = 1000;         // -n
   int   n_ch = -1;           // -c
@@ -716,10 +712,11 @@ int main( int argc, char **argv )
   bool do_fout = false;
 
   int op; // TODO: -q 0 1 2, -B - buffer
-  while( ( op = getopt( argc, argv, "hdt:n:g:c:C:D:r:o:" ) ) != -1 ) {
+  while( ( op = getopt( argc, argv, "hdq:t:n:g:c:C:D:r:o:" ) ) != -1 ) {
     switch( op ) {
       case 'h' : show_help(); return 0;
       case 'd' : ++debug; break;
+      case 'q' : q_level = strtol( optarg, 0, 0 ); break;
       case 't' : t_dly = strtol( optarg, 0, 0 ); break;
       case 'n' : N     = strtol( optarg, 0, 0 ); break;
       case 'c' : n_ch  = strtol( optarg, 0, 0 ); break;
@@ -766,7 +763,7 @@ int main( int argc, char **argv )
 
   auto drate_idx = ADS1256::findDrate( drate );
   if( drate_idx >= ADS1256::SPS_MAX ) {
-    cerr << "Bad drate value " << drate << ", must be 2,5,10,20,25,50,60,100 ... 30000" << endl;
+    cerr << "Bad drate value " << drate << ", must be 2,5,10,20,25,50,60,100,500,1000,2000,3750,7500,15000,30000" << endl;
     return 1;
   }
 
@@ -848,8 +845,13 @@ int main( int argc, char **argv )
     for( auto v : adc.getVolts() ) {
        s_os << ' ' << setw(10) << setprecision(8) << v;
     }
+
     s_os << ' ' << endl;
-    cout << s_os.str();
+    if( q_level < 1 ) {
+      cout << s_os.str();
+    } else if( q_level < 2 ) {
+      cout << '.';
+    }
     if( do_fout ) {
       os << s_os.str();
     }
@@ -862,6 +864,7 @@ int main( int argc, char **argv )
     }
     clock_nanosleep( CLOCK_MONOTONIC, TIMER_ABSTIME, &ts1, 0 );
   }
+
   cout << endl;
   if( do_fout ) {
     os << endl;
