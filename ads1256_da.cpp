@@ -180,7 +180,7 @@ class ADS1256 {
    static const unsigned ch_max = 8;
    static const AdcGainInfo gainInfo[GAIN_NUM];
    static const AdcDrateInfo drateInfo[SPS_MAX];
-   double ref_volt = 2.474;
+   double ref_volt = 2.491;
    AdcGain Gain   = GAIN_1;
    int gainval = 1;
    uint32_t setting_dly = 400180;
@@ -191,6 +191,8 @@ class ADS1256 {
    bool need_start = true;
 
    uint8_t recvByte() {  return bcm2835_spi_transfer( 0xFF ); }
+   void  recv3Byte( uint8_t *d ) {  d[0] = recvByte(); d[1] = recvByte(); d[2] = recvByte();  }
+   double read_pure();
    void cmdSync()   {   sendByte( CMD_SYNC   );  bsp_DelayUS( time_postChan ); }
    void cmdWakeUp() {   sendByte( CMD_WAKEUP );  bsp_DelayUS( time_wakeup   ); }
    void cmdSyncWakeUp() { cmdSync(); cmdWakeUp();  }
@@ -413,28 +415,9 @@ int ADS1256::measureLine1()
 
 double ADS1256::ReadData()
 {
-  uint8_t buf[3];
-
   CS_guard csg;
 
-  sendByte( CMD_RDATA );  // read ADC command
-
-  DelayDATA();  // delay time
-
-  buf[0] = recvByte(); // 24 bit
-  buf[1] = recvByte();
-  buf[2] = recvByte();
-
-  uint32_t
-  read  =  ( (uint32_t)buf[0] << 16 ) & 0x00FF0000;
-  read |=  ( (uint32_t)buf[1] <<  8 );  /* Pay attention to It is wrong   read |= (buf[1] << 8) */
-  read |=  buf[2];
-
-  if( read & 0x800000 ) { // Extend a signed number
-    read |= 0xFF000000;
-  }
-
-  return (double)((int32_t)(read))  * ref_volt / gainval / 0x400000;
+  return read_pure();
 }
 
 double ADS1256::MSW_ReadData( uint8_t m )
@@ -447,21 +430,24 @@ double ADS1256::MSW_ReadData( uint8_t m )
   bsp_DelayUS( time_postChan );
   cmdSyncWakeUp();
 
-  sendByte( CMD_RDATA );  // read ADC command
+  return read_pure();
+}
 
-  DelayDATA();  // delay time
+double ADS1256::read_pure()
+{
+  sendByte( CMD_RDATA );
 
-  uint8_t buf[3];
-  buf[0] = recvByte(); // 24 bit
-  buf[1] = recvByte();
-  buf[2] = recvByte();
+  DelayDATA();
+
+  uint8_t buf[4];
+  recv3Byte( buf );
 
   uint32_t
-    read  =  ( (uint32_t)buf[0] << 16 ) & 0x00FF0000;
-  read |=  ( (uint32_t)buf[1] <<  8 );  /* Pay attention to It is wrong   read |= (buf[1] << 8) */
+  read  =  ( (uint32_t)buf[0] << 16 ) & 0x00FF0000;
+  read |=  ( (uint32_t)buf[1] <<  8 );
   read |=  buf[2];
 
-  if( read & 0x800000 ) { // Extend a signed number
+  if( read & 0x800000 ) { // 24->32 bit signed
     read |= 0xFF000000;
   }
 
@@ -692,7 +678,7 @@ void show_help()
   cout << "ads1256_da usage: \n";
   cout << "ads1256_da [-h] [-d] [-q level] [-t t_dly,us ] [ -c channels ] \n";
   cout << "   or [ -C c1-c2,c3 ] [ -g gain ] [ -D drate ] [ -n iterations ]\n";
-  cout << "   [ -r ref_volt ] [ -o file ] [-S]\n";
+  cout << "   [ -r ref_volt ] [ -o file ] [-S] [-T]\n";
 }
 
 
@@ -711,10 +697,11 @@ int main( int argc, char **argv )
   double   ref_volt = 2.474; // -r
   string ofn;                // -o
   bool do_stat = false;      // -S
+  bool do_dtime = false;     // -T
   bool do_fout = false;
 
   int op; // TODO: -q 0 1 2, -B - buffer
-  while( ( op = getopt( argc, argv, "hdq:t:n:g:c:C:D:r:o:S" ) ) != -1 ) {
+  while( ( op = getopt( argc, argv, "hdq:t:n:g:c:C:D:r:o:ST" ) ) != -1 ) {
     switch( op ) {
       case 'h' : show_help(); return 0;
       case 'd' : ++debug; break;
@@ -728,6 +715,7 @@ int main( int argc, char **argv )
       case 'o' : ofn  = optarg; break;
       case 'C' : ch_specs  = optarg; break;
       case 'S' : do_stat  = true; break;
+      case 'T' : do_dtime  = true; break;
       default:
         cerr << "Error: unknown or bad option '" << (char)(optopt) << endl;
         show_help();
@@ -845,10 +833,18 @@ int main( int argc, char **argv )
     }
     double dt = tsc.tv_sec - ts0.tv_sec + 1e-9 * (tsc.tv_nsec - ts0.tv_nsec);
 
-    s_os.str(""); s_os.clear();
-    s_os << setfill('0') << setw(8) << i_n << ' ' << showpoint  << setw(8) << setprecision(4) << dt; // TODO: theor time
-
     adc.measureLine();
+
+    s_os.str(""); s_os.clear();
+    s_os << setfill('0') << setw(8) << i_n << ' ' << showpoint  << setw(12) << setprecision(8) ;
+    if( do_dtime ) {
+      double dt0 = i_n * t_dly * 0.001;
+      double rdt = dt - dt0;
+      s_os << dt0 << ' ' << rdt;
+    } else {
+      s_os << dt;
+    }
+
 
     {
       int i=0;
@@ -873,7 +869,7 @@ int main( int argc, char **argv )
     }
 
     ts1.tv_sec  += t_add_sec;
-    ts1.tv_nsec += t_add_ns; // compensation
+    ts1.tv_nsec += t_add_ns;
     if( ts1.tv_nsec > 1000000000L ) {
       ts1.tv_nsec -=  1000000000L;
       ++ts1.tv_sec;
