@@ -19,6 +19,23 @@
 
 using namespace std;
 
+const double default_rev_v = 2.487226;
+
+// TODO param and function
+#define DEF_PREC setw(10) << setprecision(8)
+
+#define DO_OUT \
+    if( q_level > 1 ) { \
+      cout << '.'; \
+    } else { \
+      cout << s_os.str(); \
+    }; \
+    if( do_fout ) { \
+      os << s_os.str(); \
+    } \
+    s_os.str(""); s_os.clear();
+
+
 // CS     -----   SPICS
 // DIN    -----   MOSI
 // DOUT   -----   MISO
@@ -38,6 +55,12 @@ void sigint_handler( int signum );
 void sigint_handler( int signum )
 {
   ++break_loop;
+}
+
+void drop_root_cap()
+{
+  setgid(getgid());
+  setuid(getuid());
 }
 
 inline void CS_1() { bcm2835_gpio_write( SPICS, HIGH ); }
@@ -180,7 +203,7 @@ class ADS1256 {
    static const unsigned ch_max = 8;
    static const AdcGainInfo gainInfo[GAIN_NUM];
    static const AdcDrateInfo drateInfo[SPS_MAX];
-   double ref_volt = 2.491;
+   double ref_volt = default_rev_v;
    AdcGain Gain   = GAIN_1;
    int gainval = 1;
    uint32_t setting_dly = 400180;
@@ -439,7 +462,7 @@ double ADS1256::read_pure()
 
   DelayDATA();
 
-  uint8_t buf[4];
+  uint8_t buf[3];
   recv3Byte( buf );
 
   uint32_t
@@ -694,10 +717,10 @@ int main( int argc, char **argv )
   string   ch_specs;         // -C
   int      gain = 1;         // -c
   int      drate = -1;       // -D -1 = auto
-  double   ref_volt = 2.474; // -r
+  double   ref_volt = default_rev_v; // -r
   string ofn;                // -o
   bool do_stat = false;      // -S
-  bool do_dtime = false;     // -T
+  bool do_dtime = true;     // -T
   bool do_fout = false;
 
   int op; // TODO: -q 0 1 2, -B - buffer
@@ -715,7 +738,7 @@ int main( int argc, char **argv )
       case 'o' : ofn  = optarg; break;
       case 'C' : ch_specs  = optarg; break;
       case 'S' : do_stat  = true; break;
-      case 'T' : do_dtime  = true; break;
+      case 'T' : do_dtime  = false; break;
       default:
         cerr << "Error: unknown or bad option '" << (char)(optopt) << endl;
         show_help();
@@ -784,14 +807,6 @@ int main( int argc, char **argv )
     return 1;
   }
 
-  ofstream os;
-  if( ! ofn.empty() ) {
-    os.open( ofn );
-    if( os ) {
-      do_fout = true;
-    }
-  }
-
   vector<double> v_sums( ch_n, 0.0 ), v_sums2( ch_n, 0.0 );
 
   if( ! init_hw() ) {
@@ -800,7 +815,7 @@ int main( int argc, char **argv )
   }
 
   uint8_t id = adc.ReadChipID();
-  cerr << "\r\n ID= " << (int)id << " (must be 3)"<< endl;
+  // cerr << "\r\n ID= " << (int)id << " (must be 3)"<< endl;
   if( id != 3 )  {
     cerr << "Bad chip ID " << id << endl;
     return 3;
@@ -814,12 +829,22 @@ int main( int argc, char **argv )
   struct timespec ts0, ts1, tsc;
   clock_gettime( CLOCK_MONOTONIC, &ts0 ); ts1 = ts1; // just to make GCC happy
 
+  drop_root_cap();
+
+  ofstream os;
+  if( ! ofn.empty() ) {
+    os.open( ofn );
+    if( os ) {
+      do_fout = true;
+    }
+  }
+
   string obuf;
   obuf.reserve( 256 );
   ostringstream s_os( obuf ); // .str( )
-  if( do_fout ) {
-    os << "# start" << endl;
-  }
+
+  os << "# start" << endl;
+  DO_OUT;
 
   signal( SIGINT, sigint_handler );
 
@@ -835,12 +860,14 @@ int main( int argc, char **argv )
 
     adc.measureLine();
 
-    s_os.str(""); s_os.clear();
-    s_os << setfill('0') << setw(8) << i_n << ' ' << showpoint  << setw(12) << setprecision(8) ;
+    double dt0 = i_n * t_dly * 0.001;
+    double rdt = dt - dt0;
+
+    // s_os << setfill('0') << setw(8) << i_n << ' ' << showpoint  << setw(12) << setprecision(8) ;
+    s_os << showpoint  << setw(12) << setprecision(8);
+
     if( do_dtime ) {
-      double dt0 = i_n * t_dly * 0.001;
-      double rdt = dt - dt0;
-      s_os << dt0 << ' ' << rdt;
+      s_os << dt0; //  << ' ' << rdt;
     } else {
       s_os << dt;
     }
@@ -849,7 +876,7 @@ int main( int argc, char **argv )
     {
       int i=0;
       for( auto v : adc.getVolts() ) {
-        s_os << ' ' << setw(10) << setprecision(8) << v;
+        s_os << ' ' << DEF_PREC << v;
         if( do_stat ) {
           v_sums[i]  += v;
           v_sums2[i] += v*v;
@@ -858,15 +885,21 @@ int main( int argc, char **argv )
       }
     }
 
-    s_os << ' ' << endl;
-    if( q_level < 1 ) {
-      cout << s_os.str();
-    } else if( q_level < 2 ) {
-      cout << '.';
+    s_os << ' ' << setfill('0') << setw(8) << i_n;
+    if( do_dtime ) {
+      s_os << ' ' << rdt;
     }
-    if( do_fout ) {
-      os << s_os.str();
-    }
+    s_os << endl;
+    DO_OUT;
+
+    // if( q_level < 1 ) {
+    //   cout << s_os.str();
+    // } else if( q_level < 2 ) {
+    //   cout << '.';
+    // }
+    // if( do_fout ) {
+    //   os << s_os.str();
+    // }
 
     ts1.tv_sec  += t_add_sec;
     ts1.tv_nsec += t_add_ns;
@@ -889,19 +922,21 @@ int main( int argc, char **argv )
   bcm2835_close();
 
   if( do_stat ) {
-    cout << "# Statistics: (n=" << i_n << ") avarages:" << endl;
+    s_os.str(""); s_os.clear();
+    s_os << "## Statistics: (n=" << i_n << ") avarages:" << endl;
+    DO_OUT;
     for( auto v : v_sums ) {
-      cout << setw(10) << setprecision(8) << ( v / i_n ) << ' ';
+      s_os << "# " << DEF_PREC << ( v / i_n ) << ' ';
     }
-    cout << endl;
-    cout << "# Std deviations:" << endl;
+    s_os << endl;
+    DO_OUT;
+
+    s_os << "## Std deviations:" << endl;
     for( unsigned i=0; i<v_sums.size(); ++i ) {
-      cout << setw(10) << setprecision(8) << sqrt(  v_sums2[i] * i_n - v_sums[i] * v_sums[i]  ) / i_n << ' ';
-      // cout << setw(10) << setprecision(8) << sqrt( ( v_sums2[i] ) / i_n ) << ' ';
-      // cout << setw(10) << setprecision(8) << ( ( v_sums2[i] - v_sums[i] * v_sums[i] ) / i_n ) << ' ';
-      // cout << setw(10) << setprecision(8) << v_sums2[i] << ' ' << v_sums[i]*v_sums[i] << "  |  ";
+      s_os << "# " << DEF_PREC << sqrt(  v_sums2[i] * i_n - v_sums[i] * v_sums[i]  ) / i_n << ' ';
     }
-    cout << endl;
+    s_os << endl;
+    DO_OUT;
   }
 
   return 0;
