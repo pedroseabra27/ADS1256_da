@@ -44,9 +44,10 @@ const double default_rev_v = 2.487226;
 // RST    -----   ctl_IO     reset
 
 
-#define  DRDY   RPI_GPIO_P1_11  // P0
-#define  RST    RPI_GPIO_P1_12  // P1
-#define  SPICS  RPI_GPIO_P1_15  // P3
+#define  DRDY   RPI_GPIO_P1_11  // DRDY (GPIO17, pin 11)
+#define  RST    RPI_GPIO_P1_12  // RST  (GPIO18, pin 12)
+// Many ADS1256 add-on boards use CE0 (pin 24 / GPIO8) for CS; original code used pin 15.
+#define  SPICS  RPI_GPIO_P1_24  // CS (GPIO8, pin 24)
 
 volatile int break_loop = 0;
 
@@ -686,13 +687,20 @@ int init_hw()
   if( ! bcm2835_spi_begin() )  {
     return 0;
   }
-  bcm2835_spi_setBitOrder( BCM2835_SPI_BIT_ORDER_LSBFIRST );    // The default LSBFIRST
+  // ADS1256 requires MSB first
+  bcm2835_spi_setBitOrder( BCM2835_SPI_BIT_ORDER_MSBFIRST );
   bcm2835_spi_setDataMode( BCM2835_SPI_MODE1 );                  // The default = MODE1
   bcm2835_spi_setClockDivider( BCM2835_SPI_CLOCK_DIVIDER_1024 ); // The default = 1024
   bcm2835_gpio_fsel( SPICS, BCM2835_GPIO_FSEL_OUTP );
   bcm2835_gpio_write( SPICS, HIGH );
   bcm2835_gpio_fsel( DRDY, BCM2835_GPIO_FSEL_INPT );
   bcm2835_gpio_set_pud( DRDY, BCM2835_GPIO_PUD_UP );
+  bcm2835_gpio_fsel( RST, BCM2835_GPIO_FSEL_OUTP );
+  // Hardware reset pulse
+  bcm2835_gpio_write( RST, LOW );
+  bcm2835_delayMicroseconds( 10000 );
+  bcm2835_gpio_write( RST, HIGH );
+  bcm2835_delayMicroseconds( 5000 );
   return 1;
 }
 
@@ -723,9 +731,10 @@ int main( int argc, char **argv )
   bool do_dtime = true;     // -T
   bool do_fout = false;
   bool do_probe = false;     // -P quick probe mode
+  bool do_diag = false;      // -X diagnostics (print pin states, raw status)
 
   int op; // TODO: -q 0 1 2, -B - buffer
-  while( ( op = getopt( argc, argv, "hdq:t:n:g:c:C:D:r:o:STP" ) ) != -1 ) {
+  while( ( op = getopt( argc, argv, "hdq:t:n:g:c:C:D:r:o:STPX" ) ) != -1 ) {
     switch( op ) {
       case 'h' : show_help(); return 0;
       case 'd' : ++debug; break;
@@ -741,6 +750,7 @@ int main( int argc, char **argv )
       case 'S' : do_stat  = true; break;
       case 'T' : do_dtime  = false; break;
   case 'P' : do_probe  = true; break;
+  case 'X' : do_diag   = true; break;
       default:
         cerr << "Error: unknown or bad option '" << (char)(optopt) << endl;
         show_help();
@@ -816,10 +826,18 @@ int main( int argc, char **argv )
     return 2;
   }
 
+  if( do_diag ) {
+    cerr << "# DIAG: DRDY level=" << bcm2835_gpio_lev( DRDY )
+         << " CS level=" << bcm2835_gpio_lev( SPICS )
+         << " RST level=" << bcm2835_gpio_lev( RST ) << endl;
+  }
+
   uint8_t id = adc.ReadChipID();
-  // cerr << "\r\n ID= " << (int)id << " (must be 3)"<< endl;
   if( id != 3 )  {
-    cerr << "Bad chip ID " << id << endl;
+    cerr << "Bad chip ID " << (int)id << " (expected 3)." << endl;
+    if( do_diag ) {
+      cerr << "# Hint: Check wiring: DRDY->pin11(GPIO17), RST->pin12(GPIO18), CS->pin15(GPIO22), SCLK->pin23(GPIO11), MISO->pin21(GPIO9), MOSI->pin19(GPIO10), GND, 3V3." << endl;
+    }
     return 3;
   }
 
