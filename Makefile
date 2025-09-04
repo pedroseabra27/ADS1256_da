@@ -8,9 +8,11 @@ uname_m := $(shell uname -m)
 SRCS = ads1256_da.cpp
 
 ifeq ($(uname_m),armv7l)
-  LIBS= -lbcm2835
+	LIBS= -lbcm2835
+else ifeq ($(uname_m),aarch64)
+	LIBS= -lbcm2835
 else
-  SRCS += bcm_fake.c
+	SRCS += bcm_fake.c
 endif
 #
 

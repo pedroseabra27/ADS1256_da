@@ -722,9 +722,10 @@ int main( int argc, char **argv )
   bool do_stat = false;      // -S
   bool do_dtime = true;     // -T
   bool do_fout = false;
+  bool do_probe = false;     // -P quick probe mode
 
   int op; // TODO: -q 0 1 2, -B - buffer
-  while( ( op = getopt( argc, argv, "hdq:t:n:g:c:C:D:r:o:ST" ) ) != -1 ) {
+  while( ( op = getopt( argc, argv, "hdq:t:n:g:c:C:D:r:o:STP" ) ) != -1 ) {
     switch( op ) {
       case 'h' : show_help(); return 0;
       case 'd' : ++debug; break;
@@ -739,6 +740,7 @@ int main( int argc, char **argv )
       case 'C' : ch_specs  = optarg; break;
       case 'S' : do_stat  = true; break;
       case 'T' : do_dtime  = false; break;
+  case 'P' : do_probe  = true; break;
       default:
         cerr << "Error: unknown or bad option '" << (char)(optopt) << endl;
         show_help();
@@ -824,6 +826,24 @@ int main( int argc, char **argv )
   if( ! adc.CfgADC( gain_idx, drate_idx ) ) {
     cerr << "Fail to config ADC" << endl;
     return 5;
+  }
+
+  if( do_probe ) {
+    cerr << "# Probe mode: capturing a few samples..." << endl;
+    // Force a small number of iterations ignoring -n
+    uint32_t samples = std::min<uint32_t>( N, 10 );
+    for( uint32_t pi = 0; pi < samples; ++pi ) {
+      adc.measureLine();
+      cout << "probe";
+      for( auto v : adc.getVolts() ) {
+        cout << ' ' << v;
+      }
+      cout << '\n';
+      usleep( 1000 ); // small pause so user can see values
+    }
+    bcm2835_spi_end();
+    bcm2835_close();
+    return 0;
   }
 
   struct timespec ts0, ts1, tsc;
